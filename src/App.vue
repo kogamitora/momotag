@@ -8,6 +8,7 @@ import {
   Languages,
   LoaderCircle,
   Plus,
+  RotateCcw,
   Save,
   Trash2,
   X,
@@ -38,6 +39,7 @@ const files = ref<MusicFile[]>([]);
 const tracks = ref<TrackMetadata[]>([]);
 const targetFileNames = ref<string[]>([]);
 const editedTargetFileNames = ref<boolean[]>([]);
+const pendingDeleteIndex = ref<number | null>(null);
 const statusKind = ref<StatusKind>("idle");
 const statusText = ref("");
 const isBusy = ref(false);
@@ -173,9 +175,11 @@ async function refreshFiles() {
   isBusy.value = true;
   try {
     files.value = await scanAlbumFolder(folderPath.value);
+    syncManualTracksFromFiles();
     syncTargetFileNames(true);
   } catch (error) {
     files.value = [];
+    syncManualTracksFromFiles();
     syncTargetFileNames(true);
     setStatus("error", stringifyError(error));
   } finally {
@@ -190,7 +194,7 @@ async function refreshParsedTracks() {
     clearParsingStatusTimer();
     isParsing.value = false;
     showParsingStatus.value = false;
-    tracks.value = [];
+    syncManualTracksFromFiles();
     syncTargetFileNames(true);
     statusKind.value = "idle";
     statusText.value = "";
@@ -268,6 +272,35 @@ function handleWindowKeydown(event: KeyboardEvent) {
   }
 }
 
+function resetWorkspace() {
+  parseRequestId += 1;
+  if (parseTimer) {
+    window.clearTimeout(parseTimer);
+  }
+  clearParsingStatusTimer();
+  if (coverPreview.value) {
+    URL.revokeObjectURL(coverPreview.value);
+  }
+
+  albumTitle.value = "";
+  albumArtist.value = "";
+  albumYear.value = "";
+  folderPath.value = "";
+  coverPath.value = "";
+  coverPreview.value = "";
+  tracklistText.value = "";
+  files.value = [];
+  tracks.value = [];
+  targetFileNames.value = [];
+  editedTargetFileNames.value = [];
+  pendingDeleteIndex.value = null;
+  isCoverPreviewOpen.value = false;
+  isParsing.value = false;
+  showParsingStatus.value = false;
+  statusKind.value = "idle";
+  statusText.value = "";
+}
+
 async function submit() {
   if (!canSubmit.value) {
     setStatus(
@@ -300,7 +333,6 @@ async function submit() {
     });
     setStatus("success", `${text.value.success}: ${result.updatedCount}`);
     folderPath.value = result.folderPath;
-    coverPath.value = result.coverPath;
     files.value = result.files.map((file) => ({
       fileName: file.fileName,
       path: `${result.folderPath}\\${file.fileName}`,
@@ -324,6 +356,18 @@ function stringifyError(error: unknown): string {
   if (message === "Could not detect any tracks from the album content.") {
     return text.value.errorTracksUndetected;
   }
+  if (message === "Selected cover image does not exist.") return text.value.errorCoverMissing;
+  if (message === "Cover image must be JPG, PNG, or WEBP.") return text.value.errorCoverType;
+  if (message === "Cover image is empty.") return text.value.errorCoverEmpty;
+  if (message === "Cover image is too large.") return text.value.errorCoverTooLarge;
+  if (message === "Cover image has no extension.") return text.value.errorCoverNoExtension;
+  if (message.startsWith("Could not read cover image:")) return text.value.errorCoverRead;
+  if (message.startsWith("Could not download cover image:")) return text.value.errorCoverDownload;
+  if (message.startsWith("Could not read downloaded cover image:")) return text.value.errorCoverDownload;
+  if (message.startsWith("Could not copy cover image into album folder:")) {
+    return text.value.errorCoverCopy;
+  }
+  if (message.startsWith("Invalid cover image:")) return text.value.errorCoverInvalid;
 
   return message;
 }
@@ -373,7 +417,14 @@ function handleTargetFileNameInput(index: number, event: Event) {
   editedTargetFileNames.value[index] = true;
 }
 
+function handleTrackInput(index: number, field: "title" | "artist", event: Event) {
+  ensureTrackAt(index);
+  tracks.value[index][field] = (event.target as HTMLInputElement).value;
+  syncTargetFileNames(false);
+}
+
 function addTrack() {
+  pendingDeleteIndex.value = null;
   const lastTrack = tracks.value[tracks.value.length - 1];
   tracks.value.push({
     number: lastTrack ? lastTrack.number + 1 : tracks.value.length + 1,
@@ -383,13 +434,58 @@ function addTrack() {
   syncTargetFileNames(false);
 }
 
+function syncManualTracksFromFiles() {
+  if (tracklistText.value.trim()) return;
+
+  tracks.value = files.value.map((file, index) => {
+    const existing = tracks.value[index];
+    return {
+      number: index + 1,
+      title: existing?.title ?? inferTitleFromFileName(file.fileName),
+      artist: existing?.artist ?? "",
+    };
+  });
+}
+
+function ensureTrackAt(index: number) {
+  while (tracks.value.length <= index) {
+    tracks.value.push(createManualTrack(tracks.value.length));
+  }
+}
+
+function createManualTrack(index: number) {
+  return {
+    number: index + 1,
+    title: files.value[index] ? inferTitleFromFileName(files.value[index].fileName) : "",
+    artist: "",
+  };
+}
+
+function inferTitleFromFileName(fileName: string): string {
+  const stem = fileName.replace(/\.[^.\\/]+$/, "").trim();
+  const withoutNumber = stem
+    .replace(/^\s*(?:tr(?:ack)?\.?\s*)?\d{1,3}[\s._-]+/i, "")
+    .trim();
+
+  return withoutNumber || stem;
+}
+
 function removeTrack(index: number) {
   if (!tracks.value[index]) return;
 
   tracks.value.splice(index, 1);
   targetFileNames.value.splice(index, 1);
   editedTargetFileNames.value.splice(index, 1);
+  pendingDeleteIndex.value = null;
   syncTargetFileNames(false);
+}
+
+function requestRemoveTrack(index: number) {
+  pendingDeleteIndex.value = pendingDeleteIndex.value === index ? null : index;
+}
+
+function cancelRemoveTrack() {
+  pendingDeleteIndex.value = null;
 }
 
 function sanitizeFileName(title: string): string {
@@ -509,11 +605,17 @@ function sanitizeFileName(title: string): string {
           />
         </div>
 
-        <button class="submit-button" type="submit" :disabled="!canSubmit">
-          <LoaderCircle v-if="isBusy" class="spin" :size="18" aria-hidden="true" />
-          <Save v-else :size="18" aria-hidden="true" />
-          <span>{{ text.submit }}</span>
-        </button>
+        <div class="form-actions">
+          <button class="secondary-button" type="button" :disabled="isBusy" @click="resetWorkspace">
+            <RotateCcw :size="18" aria-hidden="true" />
+            <span>{{ text.reset }}</span>
+          </button>
+          <button class="submit-button" type="submit" :disabled="!canSubmit">
+            <LoaderCircle v-if="isBusy" class="spin" :size="18" aria-hidden="true" />
+            <Save v-else :size="18" aria-hidden="true" />
+            <span>{{ text.submit }}</span>
+          </button>
+        </div>
       </form>
 
       <aside class="preview">
@@ -574,32 +676,54 @@ function sanitizeFileName(title: string): string {
                 <td>{{ row.track?.number || "-" }}</td>
                 <td>
                   <input
-                    v-if="row.track"
-                    v-model="tracks[index].title"
                     class="table-input"
+                    :value="tracks[index]?.title ?? ''"
                     :aria-label="text.title"
+                    @input="handleTrackInput(index, 'title', $event)"
                   />
-                  <span v-else>-</span>
                 </td>
                 <td>
                   <input
-                    v-if="row.track"
-                    v-model="tracks[index].artist"
                     class="table-input"
+                    :value="tracks[index]?.artist ?? ''"
                     :aria-label="text.artist"
+                    @input="handleTrackInput(index, 'artist', $event)"
                   />
-                  <span v-else>-</span>
                 </td>
                 <td class="actions-cell">
-                  <button
+                  <div
                     v-if="row.track"
-                    class="row-action-button"
-                    type="button"
-                    :title="text.deleteTrack"
-                    @click="removeTrack(index)"
+                    class="delete-popover-wrap"
+                    :class="{
+                      'delete-popover-wrap-active': pendingDeleteIndex === index,
+                      'delete-popover-wrap-below': index < 2,
+                    }"
                   >
-                    <Trash2 :size="16" aria-hidden="true" />
-                  </button>
+                    <button
+                      class="row-action-button"
+                      type="button"
+                      :title="text.deleteTrack"
+                      :aria-expanded="pendingDeleteIndex === index"
+                      @click="requestRemoveTrack(index)"
+                    >
+                      <Trash2 :size="16" aria-hidden="true" />
+                    </button>
+                    <div
+                      v-if="pendingDeleteIndex === index"
+                      class="delete-popover"
+                      :class="{ 'delete-popover-below': index < 2 }"
+                    >
+                      <span>{{ text.confirmDeleteTrack }}</span>
+                      <div class="delete-popover-actions">
+                        <button class="confirm-delete-button" type="button" @click="removeTrack(index)">
+                          {{ text.deleteTrack }}
+                        </button>
+                        <button class="cancel-delete-button" type="button" @click="cancelRemoveTrack">
+                          {{ text.cancel }}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <span v-else>-</span>
                 </td>
               </tr>
@@ -802,6 +926,7 @@ textarea {
 }
 
 .icon-button,
+.secondary-button,
 .submit-button {
   align-items: center;
   border: 0;
@@ -814,6 +939,12 @@ textarea {
   justify-content: center;
 }
 
+.form-actions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(112px, 0.36fr) minmax(180px, 1fr);
+}
+
 .icon-button {
   background: #e6f2f1;
   color: #165d68;
@@ -823,6 +954,22 @@ textarea {
 
 .icon-button:hover {
   background: #d9ebea;
+}
+
+.secondary-button {
+  background: #eef2f4;
+  color: #48515b;
+  min-height: 44px;
+  padding: 11px 14px;
+}
+
+.secondary-button:hover {
+  background: #e3e9ec;
+}
+
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .path-text {
@@ -918,6 +1065,97 @@ textarea {
 .row-action-button:hover {
   background: #eef2f4;
   color: #a13b2a;
+}
+
+.delete-popover-wrap {
+  display: inline-flex;
+  justify-content: center;
+  position: relative;
+}
+
+.delete-popover-wrap-active {
+  z-index: 12;
+}
+
+.delete-popover {
+  background: #ffffff;
+  border: 1px solid #d9e1e5;
+  border-radius: 8px;
+  box-shadow: 0 12px 34px rgba(29, 36, 43, 0.16);
+  color: #252a31;
+  display: grid;
+  gap: 10px;
+  min-width: 176px;
+  padding: 10px;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 6;
+}
+
+.delete-popover-below {
+  bottom: auto;
+  top: calc(100% + 8px);
+}
+
+.delete-popover::before {
+  background: #ffffff;
+  border-left: 1px solid #d9e1e5;
+  border-top: 1px solid #d9e1e5;
+  bottom: -5px;
+  content: "";
+  height: 9px;
+  position: absolute;
+  right: 12px;
+  transform: rotate(225deg);
+  width: 9px;
+}
+
+.delete-popover-below::before {
+  bottom: auto;
+  top: -5px;
+  transform: rotate(45deg);
+}
+
+.delete-popover span {
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.delete-popover-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.confirm-delete-button,
+.cancel-delete-button {
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  min-height: 30px;
+  padding: 6px 10px;
+}
+
+.confirm-delete-button {
+  background: #a13b2a;
+  color: #ffffff;
+}
+
+.confirm-delete-button:hover {
+  background: #8c3123;
+}
+
+.cancel-delete-button {
+  background: #eef2f4;
+  color: #48515b;
+}
+
+.cancel-delete-button:hover {
+  background: #e3e9ec;
 }
 
 .album-preview {
@@ -1039,6 +1277,7 @@ th {
   position: sticky;
   top: 0;
   white-space: nowrap;
+  z-index: 8;
 }
 
 td {
