@@ -1,16 +1,19 @@
 use crate::models::TrackMetadata;
 use regex::Regex;
 
+mod compact;
+mod structured;
+
 pub fn parse_tracklist_text(input: &str) -> Result<Vec<TrackMetadata>, String> {
     let text = normalize_input(input);
     if text.trim().is_empty() {
         return Err("Tracklist is empty.".to_string());
     }
 
-    let line_tracks = parse_line_tracks(&text);
-    let block_tracks = parse_block_tracks(&text);
-    let stacked_tracks = parse_stacked_tracks(&text);
-    let unnumbered_block_tracks = parse_unnumbered_metadata_blocks(&text);
+    let line_tracks = structured::parse_line_tracks(&text);
+    let block_tracks = structured::parse_block_tracks(&text);
+    let stacked_tracks = structured::parse_stacked_tracks(&text);
+    let unnumbered_block_tracks = structured::parse_unnumbered_metadata_blocks(&text);
     let tracks = if line_tracks.len() > 1 {
         line_tracks
     } else if block_tracks.len() > 1 {
@@ -20,7 +23,7 @@ pub fn parse_tracklist_text(input: &str) -> Result<Vec<TrackMetadata>, String> {
     } else if unnumbered_block_tracks.len() > 1 {
         unnumbered_block_tracks
     } else {
-        parse_contiguous_tracks(&text)
+        compact::parse_contiguous_tracks(&text)
     };
 
     if tracks.is_empty() {
@@ -35,216 +38,6 @@ fn normalize_input(input: &str) -> String {
         .replace("\r\n", "\n")
         .replace('\r', "\n")
         .replace('\u{3000}', " ")
-}
-
-fn parse_line_tracks(text: &str) -> Vec<TrackMetadata> {
-    let line_re = Regex::new(r"^\s*(\d{1,3})[\.\)\]:\s\t]*(.+?)\s*$").unwrap();
-
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || is_heading(trimmed) {
-                return None;
-            }
-
-            let captures = line_re.captures(trimmed)?;
-            let number = captures.get(1)?.as_str().parse::<u32>().ok()?;
-            let rest = captures.get(2)?.as_str();
-            parse_rest(rest, None).map(|(title, artist)| TrackMetadata {
-                number,
-                title,
-                artist,
-                target_file_name: None,
-            })
-        })
-        .collect()
-}
-
-fn parse_block_tracks(text: &str) -> Vec<TrackMetadata> {
-    let lines = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !is_heading(line))
-        .collect::<Vec<_>>();
-    let mut tracks = Vec::new();
-    let mut index = 0;
-
-    while index < lines.len() {
-        let Some((number, inline_title)) = parse_number_line(lines[index]) else {
-            index += 1;
-            continue;
-        };
-
-        let next_index = lines[index + 1..]
-            .iter()
-            .position(|line| parse_number_line(line).is_some())
-            .map(|offset| index + 1 + offset)
-            .unwrap_or(lines.len());
-        let block = &lines[index + 1..next_index];
-        let has_metadata = block.iter().any(|line| is_metadata_line(line));
-        let title = inline_title.or_else(|| {
-            block
-                .iter()
-                .find(|line| !is_metadata_line(line) && parse_number_line(line).is_none())
-                .map(|line| clean_value(line))
-        });
-
-        if has_metadata {
-            if let Some(title) = title.filter(|value| !value.is_empty()) {
-                tracks.push(TrackMetadata {
-                    number,
-                    title,
-                    artist: extract_artist_from_block(block).unwrap_or_default(),
-                    target_file_name: None,
-                });
-            }
-        }
-
-        index = next_index;
-    }
-
-    tracks
-}
-
-fn parse_stacked_tracks(text: &str) -> Vec<TrackMetadata> {
-    let lines = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !is_heading(line))
-        .collect::<Vec<_>>();
-    let artist_seed = infer_repeated_artist_seed_from_lines(&lines);
-    let mut tracks = Vec::new();
-    let mut index = 0;
-
-    while index < lines.len() {
-        let Some((number, inline_title)) = parse_number_line(lines[index]) else {
-            index += 1;
-            continue;
-        };
-
-        if let Some(title) = inline_title.as_deref() {
-            if let Some((title, artist)) = parse_rest(title, artist_seed.as_deref()) {
-                tracks.push(TrackMetadata {
-                    number,
-                    title,
-                    artist,
-                    target_file_name: None,
-                });
-                index += 1;
-                continue;
-            }
-        }
-
-        if inline_title.is_none() {
-            if let Some(combined_line) = lines.get(index + 1) {
-                if parse_number_line(combined_line).is_none() {
-                    if let Some((title, artist)) = parse_rest(combined_line, artist_seed.as_deref())
-                    {
-                        tracks.push(TrackMetadata {
-                            number,
-                            title,
-                            artist,
-                            target_file_name: None,
-                        });
-                        index += 2;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        let has_inline_title = inline_title.is_some();
-        let title_index = if has_inline_title { index } else { index + 1 };
-        let artist_index = title_index + 1;
-        if artist_index >= lines.len() {
-            break;
-        }
-
-        let title = inline_title.unwrap_or_else(|| lines[title_index].to_string());
-        let artist = lines[artist_index].trim();
-        if title.trim().is_empty()
-            || artist.is_empty()
-            || parse_number_line(artist).is_some()
-            || (!has_inline_title && parse_number_line(lines[title_index]).is_some())
-        {
-            index += 1;
-            continue;
-        }
-
-        tracks.push(TrackMetadata {
-            number,
-            title: clean_value(&title),
-            artist: clean_value(artist),
-            target_file_name: None,
-        });
-        index = artist_index + 1;
-    }
-
-    tracks
-}
-
-fn parse_unnumbered_metadata_blocks(text: &str) -> Vec<TrackMetadata> {
-    let lines = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !is_heading(line))
-        .collect::<Vec<_>>();
-    let mut tracks = Vec::new();
-    let mut index = 0;
-
-    while index + 1 < lines.len() {
-        let title = lines[index];
-        if is_metadata_line(title) || parse_number_line(title).is_some() {
-            index += 1;
-            continue;
-        }
-
-        let mut metadata_end = index + 1;
-        while metadata_end < lines.len() && is_metadata_line(lines[metadata_end]) {
-            metadata_end += 1;
-        }
-
-        if metadata_end == index + 1 {
-            index += 1;
-            continue;
-        }
-
-        let metadata_lines = &lines[index + 1..metadata_end];
-        tracks.push(TrackMetadata {
-            number: tracks.len() as u32 + 1,
-            title: clean_value(title),
-            artist: extract_artist_from_block(metadata_lines).unwrap_or_default(),
-            target_file_name: None,
-        });
-        index = metadata_end;
-    }
-
-    tracks
-}
-
-fn infer_repeated_artist_seed_from_lines(lines: &[&str]) -> Option<String> {
-    let chunks = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| parse_number_line(line).is_none())
-        .map(|(index, line)| (index as u32, (*line).to_string()))
-        .collect::<Vec<_>>();
-
-    infer_repeated_artist_seed(&chunks)
-}
-
-fn parse_number_line(line: &str) -> Option<(u32, Option<String>)> {
-    let number_re =
-        Regex::new(r"(?i)^\s*(?:tr(?:ack)?\.?\s*)?(\d{1,3})(?:[\.\)\]:\-\s\t]+(.*?))?\s*$")
-            .unwrap();
-    let captures = number_re.captures(line)?;
-    let number = captures.get(1)?.as_str().parse::<u32>().ok()?;
-    let title = captures
-        .get(2)
-        .map(|value| clean_value(value.as_str()))
-        .filter(|value| !value.is_empty());
-
-    Some((number, title))
 }
 
 fn is_metadata_line(line: &str) -> bool {
@@ -322,78 +115,6 @@ fn extract_labeled_credit(line: &str, labels: &[&str]) -> Option<String> {
 
         (!value.is_empty()).then_some(value)
     })
-}
-
-fn parse_contiguous_tracks(text: &str) -> Vec<TrackMetadata> {
-    let body = text
-        .lines()
-        .filter(|line| !is_heading(line.trim()))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let chunks = split_by_sequential_numbers(&body);
-    let artist_seed = infer_repeated_artist_seed(&chunks);
-
-    chunks
-        .into_iter()
-        .filter_map(|(number, rest)| {
-            parse_rest(&rest, artist_seed.as_deref()).map(|(title, artist)| TrackMetadata {
-                number,
-                title,
-                artist,
-                target_file_name: None,
-            })
-        })
-        .collect()
-}
-
-fn split_by_sequential_numbers(text: &str) -> Vec<(u32, String)> {
-    let mut result = Vec::new();
-    let mut expected = 1_u32;
-    let Some(mut current_start) = find_track_number(text, expected, 0) else {
-        return result;
-    };
-
-    loop {
-        let current_width = number_width(text, current_start, expected);
-        let content_start = current_start + current_width;
-        let next_number = expected + 1;
-        let next_start = find_track_number(text, next_number, content_start);
-        let end = next_start.unwrap_or(text.len());
-        let rest = text[content_start..end]
-            .trim()
-            .trim_start_matches(['.', ')', ':', '-', ' ', '\t'])
-            .trim()
-            .to_string();
-
-        if !rest.is_empty() {
-            result.push((expected, rest));
-        }
-
-        let Some(start) = next_start else {
-            break;
-        };
-
-        current_start = start;
-        expected = next_number;
-    }
-
-    result
-}
-
-fn find_track_number(text: &str, number: u32, from: usize) -> Option<usize> {
-    let padded = format!("{number:02}");
-    text.get(from..)
-        .and_then(|slice| slice.find(&padded).map(|offset| from + offset))
-}
-
-fn number_width(text: &str, start: usize, number: u32) -> usize {
-    let padded = format!("{number:02}");
-    if text[start..].starts_with(&padded) {
-        padded.len()
-    } else {
-        number.to_string().len()
-    }
 }
 
 fn parse_rest(rest: &str, artist_seed: Option<&str>) -> Option<(String, String)> {

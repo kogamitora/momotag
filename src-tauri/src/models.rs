@@ -1,5 +1,49 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppError {
+    pub code: String,
+    pub message: String,
+}
+
+impl AppError {
+    pub fn from_message(message: String) -> Self {
+        let code = if message == "Tracklist is empty." {
+            "tracklist_empty"
+        } else if message == "Could not detect any tracks from the album content." {
+            "tracks_undetected"
+        } else if message == "Selected cover image does not exist." {
+            "cover_missing"
+        } else if message == "Cover image must be JPG, PNG, or WEBP." {
+            "cover_type"
+        } else if message == "Cover image is empty." {
+            "cover_empty"
+        } else if message == "Cover image is too large." {
+            "cover_too_large"
+        } else if message == "Cover image has no extension." {
+            "cover_no_extension"
+        } else if message.starts_with("Could not read cover image:") {
+            "cover_read"
+        } else if message.starts_with("Could not download cover image:")
+            || message.starts_with("Could not read downloaded cover image:")
+        {
+            "cover_download"
+        } else if message.starts_with("Could not copy cover image into album folder:") {
+            "cover_copy"
+        } else if message.starts_with("Invalid cover image:") {
+            "cover_invalid"
+        } else {
+            "operation_failed"
+        };
+
+        Self {
+            code: code.to_string(),
+            message,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackMetadata {
@@ -14,6 +58,15 @@ pub struct TrackMetadata {
 pub struct MusicFile {
     pub path: String,
     pub file_name: String,
+    pub artist: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlbumMetadataSuggestion {
+    pub album_title: Option<String>,
+    pub album_artist: Option<String>,
+    pub album_year: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

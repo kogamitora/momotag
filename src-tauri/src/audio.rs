@@ -1,52 +1,11 @@
-use crate::models::{
-    ApplyMetadataResult, CoverPreviewImage, MusicFile, TrackMetadata, UpdatedFile,
-};
-use lofty::config::WriteOptions;
-use lofty::file::{AudioFile, TaggedFileExt};
-use lofty::picture::{Picture, PictureType};
-use lofty::prelude::Accessor;
-use lofty::tag::items::Timestamp;
-use lofty::tag::{ItemKey, Tag};
-use reqwest::header::CONTENT_TYPE;
+use crate::cover::{cover_picture, read_cover_image, CoverImageData};
+use crate::filesystem::scan_music_files;
+use crate::metadata::write_file_metadata;
+use crate::models::{ApplyMetadataResult, MusicFile, TrackMetadata, UpdatedFile};
+use crate::transaction::MutationJournal;
 use std::collections::HashSet;
 use std::fs;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "wav"];
-const SUPPORTED_COVER_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
-const MAX_COVER_BYTES: usize = 20 * 1024 * 1024;
-
-struct CoverImageData {
-    data: Vec<u8>,
-    mime_type: String,
-    extension: String,
-}
-
-pub fn scan_music_files(folder_path: &str) -> Result<Vec<MusicFile>, String> {
-    let folder = Path::new(folder_path);
-    if !folder.is_dir() {
-        return Err("Selected album folder does not exist.".to_string());
-    }
-
-    let mut files = fs::read_dir(folder)
-        .map_err(|err| format!("Could not read album folder: {err}"))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && is_supported_audio_file(path))
-        .map(|path| MusicFile {
-            file_name: path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .unwrap_or_else(|| path.display().to_string()),
-            path: path.display().to_string(),
-        })
-        .collect::<Vec<_>>();
-
-    files.sort_by(|left, right| natural_music_order(left).cmp(&natural_music_order(right)));
-    Ok(files)
-}
 
 pub fn apply_metadata(
     folder_path: &str,
@@ -61,6 +20,16 @@ pub fn apply_metadata(
     if album_title.is_empty() {
         return Err("Album title is empty.".to_string());
     }
+    let folder = Path::new(folder_path.trim());
+    if !folder.is_dir() {
+        return Err("Selected album folder does not exist.".to_string());
+    }
+    if cover_path.trim().is_empty() {
+        return Err("Selected cover image does not exist.".to_string());
+    }
+    if tracks.is_empty() {
+        return Err("Tracklist is empty.".to_string());
+    }
 
     let files = scan_music_files(folder_path)?;
     if files.len() != tracks.len() {
@@ -72,15 +41,64 @@ pub fn apply_metadata(
     }
 
     let cover_image = read_cover_image(cover_path)?;
-
     validate_tracks(tracks)?;
     let target_folder_path = build_album_folder_rename_path(folder_path, album_title)?;
     let rename_plan = build_rename_plan(folder_path, &files, tracks)?;
-    let copied_cover_path = copy_cover_to_album_folder(folder_path, &cover_image)?;
+    let mut journal = MutationJournal::begin(folder_path, &files)?;
+
+    match apply_metadata_mutations(
+        folder_path,
+        album_title,
+        album_artist,
+        album_year,
+        &cover_image,
+        &target_folder_path,
+        &rename_plan,
+        tracks,
+        &mut journal,
+    ) {
+        Ok(result) => {
+            journal.commit();
+            Ok(result)
+        }
+        Err(error) => {
+            let rollback_error = journal.rollback();
+            if let Some(rollback_error) = rollback_error {
+                Err(format!("{error} (rollback incomplete: {rollback_error})"))
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+fn apply_metadata_mutations(
+    folder_path: &str,
+    album_title: &str,
+    album_artist: &str,
+    album_year: Option<u16>,
+    cover_image: &CoverImageData,
+    target_folder_path: &Path,
+    rename_plan: &[(MusicFile, PathBuf)],
+    tracks: &[TrackMetadata],
+    journal: &mut MutationJournal,
+) -> Result<ApplyMetadataResult, String> {
+    let cover_target = Path::new(folder_path).join(format!("cover.{}", cover_image.extension));
+    let previous_cover = if cover_target.exists() {
+        let backup = journal.backup_path("cover.previous");
+        fs::copy(&cover_target, &backup)
+            .map_err(|err| format!("Could not prepare existing cover backup: {err}"))?;
+        Some(backup)
+    } else {
+        None
+    };
+    fs::write(&cover_target, &cover_image.data)
+        .map_err(|err| format!("Could not copy cover image into album folder: {err}"))?;
+    journal.record_cover(cover_target.clone(), previous_cover);
+
     let picture = cover_picture(&cover_image.data)?;
     let total_tracks = tracks.len() as u32;
-    let mut updated_files = Vec::with_capacity(files.len());
-
+    let mut updated_files = Vec::with_capacity(rename_plan.len());
     for ((file, target_path), track) in rename_plan.iter().zip(tracks.iter()) {
         write_file_metadata(
             file,
@@ -92,13 +110,12 @@ pub fn apply_metadata(
             picture.clone(),
         )
         .map_err(|err| format!("Failed to update {}: {err}", file.file_name))?;
-
-        let original_path = Path::new(&file.path);
-        if original_path != target_path {
-            fs::rename(original_path, target_path)
+        let original_path = Path::new(&file.path).to_path_buf();
+        if original_path != *target_path {
+            fs::rename(&original_path, target_path)
                 .map_err(|err| format!("Failed to rename {}: {err}", file.file_name))?;
+            journal.record_rename(original_path, target_path.clone());
         }
-
         updated_files.push(UpdatedFile {
             original_file_name: file.file_name.clone(),
             file_name: target_path
@@ -110,13 +127,15 @@ pub fn apply_metadata(
         });
     }
 
+    rename_album_folder(folder_path, target_folder_path)?;
+    if !paths_equivalent(Path::new(folder_path), target_folder_path) {
+        journal.record_folder_rename(target_folder_path);
+    }
     let final_cover_path = target_folder_path.join(
-        copied_cover_path
+        cover_target
             .file_name()
             .ok_or_else(|| "Copied cover path has no file name.".to_string())?,
     );
-    rename_album_folder(folder_path, &target_folder_path)?;
-
     Ok(ApplyMetadataResult {
         updated_count: updated_files.len(),
         folder_path: target_folder_path.display().to_string(),
@@ -125,67 +144,15 @@ pub fn apply_metadata(
     })
 }
 
-fn write_file_metadata(
-    file: &MusicFile,
-    album_title: &str,
-    album_artist: &str,
-    album_year: Option<u16>,
-    track: &TrackMetadata,
-    total_tracks: u32,
-    picture: Picture,
-) -> Result<(), String> {
-    let mut tagged_file =
-        lofty::read_from_path(&file.path).map_err(|err| format!("could not read tags: {err}"))?;
-    let tag_type = tagged_file.primary_tag_type();
-
-    if tagged_file.primary_tag_mut().is_none() {
-        tagged_file.insert_tag(Tag::new(tag_type));
-    }
-
-    let tag = tagged_file
-        .primary_tag_mut()
-        .ok_or_else(|| "could not create a writable primary tag".to_string())?;
-
-    tag.set_album(album_title.to_string());
-    if !album_artist.is_empty() {
-        tag.insert_text(ItemKey::AlbumArtist, album_artist.to_string());
-    }
-    if let Some(year) = album_year {
-        tag.set_date(Timestamp {
-            year,
-            month: None,
-            day: None,
-            hour: None,
-            minute: None,
-            second: None,
-        });
-    }
-    tag.set_title(track.title.clone());
-    tag.set_artist(track.artist.clone());
-    tag.set_track(track.number);
-    tag.set_track_total(total_tracks);
-
-    while !tag.pictures().is_empty() {
-        tag.remove_picture(0);
-    }
-    tag.push_picture(picture);
-
-    tagged_file
-        .save_to_path(&file.path, WriteOptions::default())
-        .map_err(|err| format!("could not write tags: {err}"))
-}
-
-pub fn read_cover_preview(cover_path: &str) -> Result<CoverPreviewImage, String> {
-    let cover_image = read_cover_image(cover_path)?;
-
-    Ok(CoverPreviewImage {
-        mime_type: cover_image.mime_type,
-        data: cover_image.data,
-    })
-}
-
 fn validate_tracks(tracks: &[TrackMetadata]) -> Result<(), String> {
+    let mut numbers = HashSet::new();
     for track in tracks {
+        if track.number == 0 || !numbers.insert(track.number) {
+            return Err(format!(
+                "Track number {:02} is duplicated or invalid.",
+                track.number
+            ));
+        }
         if track.title.trim().is_empty() {
             return Err(format!("Track {:02} title is empty.", track.number));
         }
@@ -273,6 +240,12 @@ fn target_file_name(
     if trimmed.is_empty() {
         return Err(format!("Target file name for {} is empty.", file.file_name));
     }
+    if trimmed == "." || trimmed == ".." {
+        return Err(format!(
+            "Target file name for {} is invalid.",
+            file.file_name
+        ));
+    }
 
     if Path::new(trimmed).extension().is_some() {
         Ok(trimmed.to_string())
@@ -343,205 +316,44 @@ fn paths_equivalent(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn copy_cover_to_album_folder(
-    folder_path: &str,
-    cover_image: &CoverImageData,
-) -> Result<PathBuf, String> {
-    let target = Path::new(folder_path).join(format!("cover.{}", cover_image.extension));
-    fs::write(&target, &cover_image.data)
-        .map_err(|err| format!("Could not copy cover image into album folder: {err}"))?;
-    Ok(target)
-}
+#[cfg(test)]
+mod tests {
+    use super::{sanitize_file_name, target_file_name, validate_tracks};
+    use crate::models::{MusicFile, TrackMetadata};
 
-fn read_cover_image(cover_path: &str) -> Result<CoverImageData, String> {
-    let source = cover_path.trim();
-    if source.is_empty() {
-        return Err("Selected cover image does not exist.".to_string());
+    fn track(number: u32, title: &str) -> TrackMetadata {
+        TrackMetadata {
+            number,
+            title: title.to_string(),
+            artist: "Artist".to_string(),
+            target_file_name: None,
+        }
     }
 
-    if is_http_url(source) {
-        return download_cover_image(source);
+    #[test]
+    fn rejects_duplicate_track_numbers() {
+        let tracks = vec![track(1, "One"), track(1, "Two")];
+        assert!(validate_tracks(&tracks).is_err());
     }
 
-    let path = Path::new(source);
-    if !path.is_file() {
-        return Err("Selected cover image does not exist.".to_string());
+    #[test]
+    fn sanitizes_windows_file_name_characters() {
+        assert_eq!(sanitize_file_name("  A<>:\"/B  "), "A B");
+        assert_eq!(sanitize_file_name("..."), "Untitled");
     }
 
-    let mime_type = cover_mime_type_from_path(path)?;
-    let extension = cover_extension_from_mime_type(&mime_type)
-        .or_else(|| cover_extension_from_path(path))
-        .ok_or_else(|| "Cover image must be JPG, PNG, or WEBP.".to_string())?;
-    let data = fs::read(path).map_err(|err| format!("Could not read cover image: {err}"))?;
-    validate_cover_size(data.len())?;
-
-    Ok(CoverImageData {
-        data,
-        mime_type,
-        extension,
-    })
-}
-
-fn download_cover_image(url: &str) -> Result<CoverImageData, String> {
-    let response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(20))
-        .user_agent("momotag-cover-loader")
-        .build()
-        .map_err(|err| format!("Could not prepare image download: {err}"))?
-        .get(url)
-        .send()
-        .map_err(|err| format!("Could not download cover image: {err}"))?
-        .error_for_status()
-        .map_err(|err| format!("Could not download cover image: {err}"))?;
-
-    let header_mime_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let data = response
-        .bytes()
-        .map_err(|err| format!("Could not read downloaded cover image: {err}"))?
-        .to_vec();
-    validate_cover_size(data.len())?;
-
-    let mime_type = header_mime_type
-        .filter(|value| cover_extension_from_mime_type(value).is_some())
-        .or_else(|| infer_cover_mime_type_from_bytes(&data))
-        .or_else(|| {
-            cover_extension_from_url(url)
-                .map(|extension| cover_mime_type_from_extension(&extension).to_string())
-                .filter(|value| !value.is_empty())
-        })
-        .ok_or_else(|| "Cover image must be JPG, PNG, or WEBP.".to_string())?;
-    let extension = cover_extension_from_mime_type(&mime_type)
-        .ok_or_else(|| "Cover image must be JPG, PNG, or WEBP.".to_string())?;
-
-    Ok(CoverImageData {
-        data,
-        mime_type,
-        extension,
-    })
-}
-
-fn validate_cover_size(size: usize) -> Result<(), String> {
-    if size == 0 {
-        return Err("Cover image is empty.".to_string());
+    #[test]
+    fn appends_original_extension_to_custom_name() {
+        let file = MusicFile {
+            path: "C:\\album\\01.flac".to_string(),
+            file_name: "01.flac".to_string(),
+            artist: None,
+        };
+        let mut metadata = track(1, "One");
+        metadata.target_file_name = Some("custom".to_string());
+        assert_eq!(
+            target_file_name(&file, &metadata, "flac").unwrap(),
+            "custom.flac"
+        );
     }
-
-    if size > MAX_COVER_BYTES {
-        return Err("Cover image is too large.".to_string());
-    }
-
-    Ok(())
-}
-
-fn cover_mime_type_from_path(path: &Path) -> Result<String, String> {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .ok_or_else(|| "Cover image has no extension.".to_string())?;
-
-    let mime_type = cover_mime_type_from_extension(&extension);
-    if mime_type.is_empty() {
-        Err("Cover image must be JPG, PNG, or WEBP.".to_string())
-    } else {
-        Ok(mime_type.to_string())
-    }
-}
-
-fn cover_mime_type_from_extension(extension: &str) -> &'static str {
-    match extension {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "webp" => "image/webp",
-        _ => "",
-    }
-}
-
-fn cover_extension_from_mime_type(mime_type: &str) -> Option<String> {
-    match mime_type {
-        "image/jpeg" => Some("jpg".to_string()),
-        "image/png" => Some("png".to_string()),
-        "image/webp" => Some("webp".to_string()),
-        _ => None,
-    }
-}
-
-fn cover_extension_from_path(path: &Path) -> Option<String> {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| SUPPORTED_COVER_EXTENSIONS.contains(&value.as_str()))
-}
-
-fn cover_extension_from_url(url: &str) -> Option<String> {
-    let without_fragment = url.split('#').next().unwrap_or(url);
-    let without_query = without_fragment
-        .split('?')
-        .next()
-        .unwrap_or(without_fragment);
-
-    Path::new(without_query)
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .filter(|value| SUPPORTED_COVER_EXTENSIONS.contains(&value.as_str()))
-}
-
-fn infer_cover_mime_type_from_bytes(data: &[u8]) -> Option<String> {
-    if data.starts_with(&[0xff, 0xd8, 0xff]) {
-        return Some("image/jpeg".to_string());
-    }
-
-    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Some("image/png".to_string());
-    }
-
-    if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
-        return Some("image/webp".to_string());
-    }
-
-    None
-}
-
-fn cover_picture(data: &[u8]) -> Result<Picture, String> {
-    let mut cursor = Cursor::new(data);
-    let mut picture =
-        Picture::from_reader(&mut cursor).map_err(|err| format!("Invalid cover image: {err}"))?;
-    picture.set_pic_type(PictureType::CoverFront);
-    Ok(picture)
-}
-
-fn is_http_url(value: &str) -> bool {
-    value.starts_with("https://") || value.starts_with("http://")
-}
-
-fn is_supported_audio_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .map(|extension| {
-            SUPPORTED_AUDIO_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str())
-        })
-        .unwrap_or(false)
-}
-
-fn natural_music_order(file: &MusicFile) -> (u32, String) {
-    let stem = Path::new(&file.file_name)
-        .file_stem()
-        .map(|value| value.to_string_lossy())
-        .unwrap_or_default();
-
-    let leading_number = stem
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>()
-        .parse::<u32>()
-        .unwrap_or(u32::MAX);
-
-    (leading_number, file.file_name.to_lowercase())
 }

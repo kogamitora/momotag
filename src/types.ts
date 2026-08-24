@@ -1,6 +1,18 @@
+export interface AppError {
+  code: string;
+  message: string;
+}
+
 export interface MusicFile {
   path: string;
   fileName: string;
+  artist: string | null;
+}
+
+export interface AlbumMetadataSuggestion {
+  albumTitle: string | null;
+  albumArtist: string | null;
+  albumYear: number | null;
 }
 
 export interface TrackMetadata {

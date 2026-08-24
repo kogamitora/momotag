@@ -1,7 +1,11 @@
 mod audio;
 mod commands;
+mod cover;
+mod filesystem;
+mod metadata;
 mod models;
 mod parser;
+mod transaction;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -12,7 +16,8 @@ pub fn run() {
             commands::apply_album_metadata,
             commands::load_cover_preview,
             commands::parse_tracklist,
-            commands::scan_album_folder
+            commands::scan_album_folder,
+            commands::suggest_album_metadata
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
