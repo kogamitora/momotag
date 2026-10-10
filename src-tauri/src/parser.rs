@@ -1,6 +1,8 @@
 use crate::models::TrackMetadata;
 use regex::Regex;
 
+pub mod credits;
+pub mod lexicon;
 mod compact;
 mod structured;
 
@@ -40,44 +42,38 @@ fn normalize_input(input: &str) -> String {
         .replace('\u{3000}', " ")
 }
 
-fn is_metadata_line(line: &str) -> bool {
-    let normalized = line.trim().to_lowercase();
-    let normalized = normalized.as_str();
-    normalized.starts_with("lyrics")
-        || normalized.starts_with("music")
-        || normalized.starts_with("compose")
-        || normalized.starts_with("arrange")
-        || normalized.starts_with("from:")
-        || normalized.starts_with("from：")
+pub(crate) fn normalize_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !is_heading(line))
+        .collect()
 }
 
-fn extract_artist_from_block(lines: &[&str]) -> Option<String> {
-    let from_artist = lines.iter().find_map(|line| {
-        let trimmed = line.trim();
-        let lower = trimmed.to_lowercase();
-        if !(lower.starts_with("from:") || lower.starts_with("from：")) {
-            return None;
-        }
-
-        let slash_index = trimmed.find('/').or_else(|| trimmed.find('／'))?;
-        let artist = clean_value(&trimmed[slash_index + 1..]);
-        (!artist.is_empty()).then_some(artist)
-    });
-
-    from_artist.or_else(|| {
-        lines
-            .iter()
-            .find(|line| is_metadata_line(line) && !line.to_lowercase().starts_with("from"))
-            .and_then(|line| extract_credit_from_metadata_line(line))
-    })
+fn is_metadata_line(line: &str) -> bool {
+    credits::parse_credit_line(line).is_some() || {
+        let normalized = line.trim().to_lowercase();
+        let normalized = normalized.as_str();
+        normalized.starts_with("lyrics")
+            || normalized.starts_with("music")
+            || normalized.starts_with("compose")
+            || normalized.starts_with("arrange")
+            || normalized.starts_with("from:")
+            || normalized.starts_with("from：")
+    }
 }
 
 fn extract_credit_from_metadata_line(line: &str) -> Option<String> {
+    if let Some(parsed) = credits::parse_credit_line(line) {
+        if let Some(artist) = credits::select_artist_from_credits(&parsed.credits) {
+            return Some(artist);
+        }
+    }
+
     extract_labeled_credit(line, &["lyrics", "lyric"])
         .or_else(|| extract_labeled_credit(line, &["music", "compose", "composition"]))
         .or_else(|| extract_labeled_credit(line, &["arrangement", "arrange"]))
         .or_else(|| {
-            line.rsplit(|ch| ch == ':' || ch == '：')
+            line.rsplit([':', '：'])
                 .next()
                 .map(clean_value)
                 .filter(|value| !value.is_empty())
@@ -590,5 +586,116 @@ Music&Lyrics:x-x";
         assert_eq!(tracks[3].artist, "畑 亜貴");
         assert_eq!(tracks[4].title, "ひといき");
         assert_eq!(tracks[4].artist, "x-x");
+    }
+
+    #[test]
+    fn parses_user_sample_case_1() {
+        let input = "\
+だめいぬ♡いんだ♡だっこ
+music,arrange,mix:Toccoyaki　music,lyric:桃寝ちのい
+弱くなれ！
+music,lyric:呆　mix:大村みこり
+♡かわいいだけのおしごと♡
+music:iru　lyric:桃寝ちのい　mix:やっすん(studio Lit.)
+エンゼルフード
+music,lyric,arrange:uotak(Philtz)　mix:オオウチアラタ(Philtz),大村みこり
+ぽわぽわぷてぃこんてんしさま
+music,lyric,mix:MOSAIC.WAV
+あしたのあたしにご期待ください。
+music,lyric,mix:かたほとり";
+        let tracks = parse_tracklist_text(input).unwrap();
+        assert_eq!(tracks.len(), 6);
+        assert_eq!(tracks[0].title, "だめいぬ♡いんだ♡だっこ");
+        assert_eq!(tracks[0].artist, "桃寝ちのい");
+        assert_eq!(tracks[1].title, "弱くなれ！");
+        assert_eq!(tracks[1].artist, "呆");
+        assert_eq!(tracks[2].title, "♡かわいいだけのおしごと♡");
+        assert_eq!(tracks[2].artist, "桃寝ちのい");
+        assert_eq!(tracks[3].title, "エンゼルフード");
+        assert_eq!(tracks[3].artist, "uotak(Philtz)");
+        assert_eq!(tracks[4].title, "ぽわぽわぷてぃこんてんしさま");
+        assert_eq!(tracks[4].artist, "MOSAIC.WAV");
+        assert_eq!(tracks[5].title, "あしたのあたしにご期待ください。");
+        assert_eq!(tracks[5].artist, "かたほとり");
+    }
+
+    #[test]
+    fn parses_user_sample_case_2() {
+        let input = "\
+01
+てんしさまのいうとおり
+music,lyric,mix : 立秋
+02
+Kissin' 燃料で治癒したい
+music,lyric : でんの子P　mix : 如月結愛
+03
+ムテキメモリー feat.桜苺ちる
+music,mix : Toccoyaki　lyric : 桃寝ちのい,桜苺ちる
+04
+電脳眠眠猫
+music,lyric,mix : なみぐる
+05
+きみの恋に终止符を
+music,lyric : 溝野あわ　mix : Noro
+06
+のんぷれっくす
+music,mix : Toccoyaki　lyric : 桃寝ちのい";
+        let tracks = parse_tracklist_text(input).unwrap();
+        assert_eq!(tracks.len(), 6);
+        assert_eq!(tracks[0].title, "てんしさまのいうとおり");
+        assert_eq!(tracks[0].artist, "立秋");
+        assert_eq!(tracks[1].title, "Kissin' 燃料で治癒したい");
+        assert_eq!(tracks[1].artist, "でんの子P");
+        assert_eq!(tracks[2].title, "ムテキメモリー feat.桜苺ちる");
+        assert_eq!(tracks[2].artist, "桃寝ちのい,桜苺ちる");
+        assert_eq!(tracks[3].title, "電脳眠眠猫");
+        assert_eq!(tracks[3].artist, "なみぐる");
+        assert_eq!(tracks[4].title, "きみの恋に终止符を");
+        assert_eq!(tracks[4].artist, "溝野あわ");
+        assert_eq!(tracks[5].title, "のんぷれっくす");
+        assert_eq!(tracks[5].artist, "桃寝ちのい");
+    }
+
+    #[test]
+    fn parses_user_sample_case_3() {
+        let input = "\
+01
+のんねむ逃避行
+music : ちろ:D　lyric : もちうつね
+02
+mochi
+ボイスサンプルパック使用曲
+03
+めりぃめりぃろんり～
+music : Toccoyaki　lyric : 桃寝ちのい
+04
+ももたん♡ふぁんく
+music : ckwa　lyric : 桃寝ちのい
+05
+星盗
+music,lyric : 電ǂ鯨　mix : 如月結愛
+06
+桃源郷で救済を (solo)
+music : ぺぽよ　lyric : 桃寝ちのい　mix : Noro";
+        let tracks = parse_tracklist_text(input).unwrap();
+        assert_eq!(tracks.len(), 6);
+        assert_eq!(tracks[0].number, 1);
+        assert_eq!(tracks[0].title, "のんねむ逃避行");
+        assert_eq!(tracks[0].artist, "もちうつね");
+        assert_eq!(tracks[1].number, 2);
+        assert_eq!(tracks[1].title, "mochi");
+        assert_eq!(tracks[1].artist, "");
+        assert_eq!(tracks[2].number, 3);
+        assert_eq!(tracks[2].title, "めりぃめりぃろんり～");
+        assert_eq!(tracks[2].artist, "桃寝ちのい");
+        assert_eq!(tracks[3].number, 4);
+        assert_eq!(tracks[3].title, "ももたん♡ふぁんく");
+        assert_eq!(tracks[3].artist, "桃寝ちのい");
+        assert_eq!(tracks[4].number, 5);
+        assert_eq!(tracks[4].title, "星盗");
+        assert_eq!(tracks[4].artist, "電ǂ鯨");
+        assert_eq!(tracks[5].number, 6);
+        assert_eq!(tracks[5].title, "桃源郷で救済を (solo)");
+        assert_eq!(tracks[5].artist, "桃寝ちのい");
     }
 }

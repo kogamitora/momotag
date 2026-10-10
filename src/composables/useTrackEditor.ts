@@ -31,8 +31,8 @@ export function useTrackEditor(tracklistText: Ref<string>) {
   function defaultTargetFileName(index: number): string {
     const file = files.value[index];
     const track = tracks.value[index];
-    if (!file) return "-";
-    if (!track) return file.fileName;
+    if (!file || !file.path) return "-";
+    if (!track || !track.title.trim()) return file.fileName;
 
     const extension = file.fileName.split(".").pop() || "flac";
     return `${String(track.number).padStart(2, "0")} ${sanitizeFileName(track.title)}.${extension}`;
@@ -86,12 +86,12 @@ export function useTrackEditor(tracklistText: Ref<string>) {
   }
 
   function removeTrack(index: number) {
-    if (!tracks.value[index]) return;
+    if (!tracks.value[index] && !files.value[index]) return;
 
     // Remove the in-memory file/track pair together. This only excludes the
     // file from the current write batch; it never deletes the source file.
     if (files.value[index]) files.value.splice(index, 1);
-    tracks.value.splice(index, 1);
+    if (tracks.value[index]) tracks.value.splice(index, 1);
     targetFileNames.value.splice(index, 1);
     editedTargetFileNames.value.splice(index, 1);
     pendingDeleteIndex.value = null;

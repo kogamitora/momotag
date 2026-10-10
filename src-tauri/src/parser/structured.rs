@@ -1,21 +1,76 @@
-use super::{
-    clean_value, extract_artist_from_block, infer_repeated_artist_seed, is_heading,
-    is_metadata_line, parse_rest,
-};
+use super::clean_value;
+use super::credits::{parse_credit_line, select_artist_from_credits};
+use super::normalize_lines;
 use crate::models::TrackMetadata;
 use regex::Regex;
+
+pub(super) fn is_metadata_line(line: &str) -> bool {
+    if parse_credit_line(line).is_some() {
+        return true;
+    }
+    let trimmed = line.trim();
+    let lower = trimmed.to_lowercase();
+    lower.starts_with("from:")
+        || lower.starts_with("from：")
+        || lower.starts_with("lyrics")
+        || lower.starts_with("music")
+        || lower.starts_with("compose")
+        || lower.starts_with("arrange")
+}
+
+pub(super) fn extract_artist_from_block(lines: &[&str]) -> Option<String> {
+    // 1. Check for From: source lines
+    for line in lines {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+        if lower.starts_with("from:") || lower.starts_with("from：") {
+            if let Some(slash_idx) = trimmed.find('/').or_else(|| trimmed.find('／')) {
+                let artist = clean_value(&trimmed[slash_idx + 1..]);
+                if !artist.is_empty() {
+                    return Some(artist);
+                }
+            }
+        }
+    }
+
+    // 2. Structured credits
+    for line in lines {
+        if let Some(parsed) = parse_credit_line(line) {
+            if let Some(artist) = select_artist_from_credits(&parsed.credits) {
+                return Some(artist);
+            }
+        }
+    }
+
+    None
+}
 
 pub(super) fn parse_line_tracks(text: &str) -> Vec<TrackMetadata> {
     let line_re = Regex::new(r"^\s*(\d{1,3})[\.\)\]:\s\t]*(.+?)\s*$").unwrap();
     text.lines()
         .filter_map(|line| {
             let trimmed = line.trim();
-            if trimmed.is_empty() || is_heading(trimmed) {
+            if trimmed.is_empty() || super::is_heading(trimmed) {
                 return None;
             }
             let captures = line_re.captures(trimmed)?;
             let number = captures.get(1)?.as_str().parse::<u32>().ok()?;
-            parse_rest(captures.get(2)?.as_str(), None).map(|(title, artist)| TrackMetadata {
+            let rest = captures.get(2)?.as_str();
+
+            // First check if rest has an inline credit prefix like "Title - Music: ..."
+            if let Some(parsed_credit) = parse_credit_line(rest) {
+                if let Some(prefix_title) = parsed_credit.prefix {
+                    let artist = select_artist_from_credits(&parsed_credit.credits).unwrap_or_default();
+                    return Some(TrackMetadata {
+                        number,
+                        title: clean_value(&prefix_title),
+                        artist,
+                        target_file_name: None,
+                    });
+                }
+            }
+
+            super::parse_rest(rest, None).map(|(title, artist)| TrackMetadata {
                 number,
                 title,
                 artist,
@@ -26,27 +81,34 @@ pub(super) fn parse_line_tracks(text: &str) -> Vec<TrackMetadata> {
 }
 
 pub(super) fn parse_block_tracks(text: &str) -> Vec<TrackMetadata> {
-    let lines = normalized_lines(text);
+    let lines = normalize_lines(text);
     let mut tracks = Vec::new();
     let mut index = 0;
+
+    let has_any_metadata = lines.iter().any(|l| is_metadata_line(l));
+
     while index < lines.len() {
         let Some((number, inline_title)) = parse_number_line(lines[index]) else {
             index += 1;
             continue;
         };
+
         let next_index = lines[index + 1..]
             .iter()
             .position(|line| parse_number_line(line).is_some())
             .map(|offset| index + 1 + offset)
             .unwrap_or(lines.len());
         let block = &lines[index + 1..next_index];
+
         let title = inline_title.or_else(|| {
             block
                 .iter()
                 .find(|line| !is_metadata_line(line) && parse_number_line(line).is_none())
                 .map(|line| clean_value(line))
         });
-        if block.iter().any(|line| is_metadata_line(line)) {
+
+        // If the document overall uses metadata blocks, accept any numbered track even if this specific track only has notes (e.g. 02 mochi)
+        if has_any_metadata || block.iter().any(|line| is_metadata_line(line)) {
             if let Some(title) = title.filter(|value| !value.is_empty()) {
                 tracks.push(TrackMetadata {
                     number,
@@ -62,7 +124,7 @@ pub(super) fn parse_block_tracks(text: &str) -> Vec<TrackMetadata> {
 }
 
 pub(super) fn parse_stacked_tracks(text: &str) -> Vec<TrackMetadata> {
-    let lines = normalized_lines(text);
+    let lines = normalize_lines(text);
     let artist_seed = infer_repeated_artist_seed_from_lines(&lines);
     let mut tracks = Vec::new();
     let mut index = 0;
@@ -72,7 +134,7 @@ pub(super) fn parse_stacked_tracks(text: &str) -> Vec<TrackMetadata> {
             continue;
         };
         if let Some(title) = inline_title.as_deref() {
-            if let Some((title, artist)) = parse_rest(title, artist_seed.as_deref()) {
+            if let Some((title, artist)) = super::parse_rest(title, artist_seed.as_deref()) {
                 tracks.push(TrackMetadata {
                     number,
                     title,
@@ -86,7 +148,8 @@ pub(super) fn parse_stacked_tracks(text: &str) -> Vec<TrackMetadata> {
         if inline_title.is_none() {
             if let Some(combined_line) = lines.get(index + 1) {
                 if parse_number_line(combined_line).is_none() {
-                    if let Some((title, artist)) = parse_rest(combined_line, artist_seed.as_deref())
+                    if let Some((title, artist)) =
+                        super::parse_rest(combined_line, artist_seed.as_deref())
                     {
                         tracks.push(TrackMetadata {
                             number,
@@ -128,7 +191,7 @@ pub(super) fn parse_stacked_tracks(text: &str) -> Vec<TrackMetadata> {
 }
 
 pub(super) fn parse_unnumbered_metadata_blocks(text: &str) -> Vec<TrackMetadata> {
-    let lines = normalized_lines(text);
+    let lines = normalize_lines(text);
     let mut tracks = Vec::new();
     let mut index = 0;
     while index + 1 < lines.len() {
@@ -157,13 +220,6 @@ pub(super) fn parse_unnumbered_metadata_blocks(text: &str) -> Vec<TrackMetadata>
     tracks
 }
 
-fn normalized_lines(text: &str) -> Vec<&str> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !is_heading(line))
-        .collect()
-}
-
 fn infer_repeated_artist_seed_from_lines(lines: &[&str]) -> Option<String> {
     let chunks = lines
         .iter()
@@ -171,7 +227,7 @@ fn infer_repeated_artist_seed_from_lines(lines: &[&str]) -> Option<String> {
         .filter(|(_, line)| parse_number_line(line).is_none())
         .map(|(index, line)| (index as u32, (*line).to_string()))
         .collect::<Vec<_>>();
-    infer_repeated_artist_seed(&chunks)
+    super::infer_repeated_artist_seed(&chunks)
 }
 
 fn parse_number_line(line: &str) -> Option<(u32, Option<String>)> {

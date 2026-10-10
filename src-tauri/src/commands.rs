@@ -33,13 +33,13 @@ pub fn load_cover_preview(cover_path: String) -> Result<CoverPreviewImage, AppEr
 pub fn apply_album_metadata(
     request: ApplyMetadataRequest,
 ) -> Result<ApplyMetadataResult, AppError> {
-    apply_metadata(
-        &request.folder_path,
-        &request.album_title,
-        &request.album_artist,
-        request.album_year,
-        &request.cover_path,
-        &request.tracks,
-    )
-    .map_err(AppError::from_message)
+    apply_metadata(&request).map_err(AppError::from_message)
+}
+
+#[tauri::command]
+pub fn align_tracks(
+    files: Vec<MusicFile>,
+    tracks: Vec<TrackMetadata>,
+) -> Result<Vec<crate::models::AlignedItem>, AppError> {
+    Ok(crate::aligner::align_files_and_tracks(&files, &tracks))
 }

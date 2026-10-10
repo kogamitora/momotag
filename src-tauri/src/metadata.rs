@@ -13,7 +13,7 @@ pub(crate) fn write_file_metadata(
     album_year: Option<u16>,
     track: &TrackMetadata,
     total_tracks: u32,
-    picture: Picture,
+    picture: Option<Picture>,
 ) -> Result<(), String> {
     let mut tagged_file =
         lofty::read_from_path(&file.path).map_err(|err| format!("could not read tags: {err}"))?;
@@ -42,14 +42,21 @@ pub(crate) fn write_file_metadata(
         });
     }
     tag.set_title(track.title.clone());
-    tag.set_artist(track.artist.clone());
+    let effective_artist = if track.artist.trim().is_empty() {
+        album_artist
+    } else {
+        track.artist.as_str()
+    };
+    tag.set_artist(effective_artist.to_string());
     tag.set_track(track.number);
     tag.set_track_total(total_tracks);
 
-    while !tag.pictures().is_empty() {
-        tag.remove_picture(0);
+    if let Some(picture) = picture {
+        while !tag.pictures().is_empty() {
+            tag.remove_picture(0);
+        }
+        tag.push_picture(picture);
     }
-    tag.push_picture(picture);
 
     tagged_file
         .save_to_path(&file.path, WriteOptions::default())

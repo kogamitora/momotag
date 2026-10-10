@@ -7,8 +7,7 @@ import type {
   MusicFile,
   TrackMetadata,
 } from "../types";
-import { parseTracklistLocally } from "../utils/trackParser";
-import { invokeCommand, isTauriUnavailableError } from "./tauriClient";
+import { invokeCommand } from "./tauriClient";
 
 export async function chooseAlbumFolder(): Promise<string | null> {
   const selected = await open({
@@ -53,17 +52,18 @@ export function loadCoverPreview(
 }
 
 export function parseTracklist(tracklistText: string): Promise<TrackMetadata[]> {
-  return invokeCommand<TrackMetadata[]>("parse_tracklist", { tracklistText }).catch((error) => {
-    if (isTauriUnavailableError(error)) {
-      return parseTracklistLocally(tracklistText);
-    }
-
-    throw error;
-  });
+  return invokeCommand<TrackMetadata[]>("parse_tracklist", { tracklistText });
 }
 
 export function applyAlbumMetadata(
   request: ApplyMetadataRequest,
 ): Promise<ApplyMetadataResult> {
   return invokeCommand("apply_album_metadata", { request });
+}
+
+export function alignTracks(
+  files: MusicFile[],
+  tracks: TrackMetadata[],
+): Promise<import("../types").AlignedItem[]> {
+  return invokeCommand("align_tracks", { files, tracks });
 }

@@ -1,3 +1,4 @@
+mod aligner;
 mod audio;
 mod commands;
 mod cover;
@@ -13,6 +14,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            commands::align_tracks,
             commands::apply_album_metadata,
             commands::load_cover_preview,
             commands::parse_tracklist,

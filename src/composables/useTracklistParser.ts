@@ -1,10 +1,11 @@
 import { ref, watch, type Ref } from "vue";
-import { parseTracklist } from "../api/musicTags";
-import type { TrackMetadata } from "../types";
+import { alignTracks, parseTracklist } from "../api/musicTags";
+import type { MusicFile, TrackMetadata } from "../types";
 
 interface TracklistParserOptions {
   tracklistText: Ref<string>;
   tracks: Ref<TrackMetadata[]>;
+  files: Ref<MusicFile[]>;
   syncManualTracksFromFiles: () => void;
   syncTargetFileNames: (resetEdits: boolean) => void;
   onError: (error: unknown) => void;
@@ -44,7 +45,16 @@ export function useTracklistParser(options: TracklistParserOptions) {
     try {
       const parsedTracks = await parseTracklist(content);
       if (requestId !== parseRequestId) return;
-      options.tracks.value = parsedTracks;
+
+      const validFiles = options.files.value.filter((f) => f && f.path);
+      if (validFiles.length > 0) {
+        const aligned = await alignTracks(validFiles, parsedTracks);
+        options.files.value = aligned.map((a) => a.file ?? { fileName: "-", path: "", artist: null });
+        options.tracks.value = aligned.map((a) => a.track ?? { number: 0, title: "", artist: "" });
+      } else {
+        options.tracks.value = parsedTracks;
+      }
+
       options.syncTargetFileNames(true);
       options.onClearStatus();
     } catch (error) {

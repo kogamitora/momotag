@@ -17,15 +17,12 @@ pub(crate) struct MutationJournal {
 impl MutationJournal {
     pub(crate) fn begin(folder_path: &str, files: &[MusicFile]) -> Result<Self, String> {
         let folder = Path::new(folder_path);
-        let parent = folder
-            .parent()
-            .ok_or_else(|| "Could not find the parent folder for the album folder.".to_string())?;
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "Could not create a temporary backup directory.".to_string())?
             .as_nanos();
-        let backup_dir = parent.join(format!(".momotag-backup-{stamp}"));
-        fs::create_dir(&backup_dir)
+        let backup_dir = std::env::temp_dir().join(format!(".momotag-backup-{stamp}"));
+        fs::create_dir_all(&backup_dir)
             .map_err(|err| format!("Could not create a temporary backup directory: {err}"))?;
 
         let mut backups = Vec::with_capacity(files.len());

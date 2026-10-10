@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-vue-next";
 import {
+  alignTracks,
   applyAlbumMetadata,
   chooseAlbumFolder,
   scanAlbumFolder,
@@ -18,6 +19,7 @@ import {
 } from "./api/musicTags";
 import { detectLocale, labels, localeNames, type Locale } from "./i18n";
 import { isAppError } from "./api/tauriClient";
+import type { MusicFile, TrackMetadata } from "./types";
 import { useTrackEditor } from "./composables/useTrackEditor";
 import { useCoverPreview } from "./composables/useCoverPreview";
 import { useTracklistParser } from "./composables/useTracklistParser";
@@ -36,6 +38,7 @@ const tracklistText = ref("");
 const statusKind = ref<StatusKind>("idle");
 const statusText = ref("");
 const isBusy = ref(false);
+const renameFolder = ref(false);
 let folderRequestId = 0;
 const {
   files,
@@ -57,6 +60,7 @@ const text = computed(() => labels[locale.value]);
 const { showParsingStatus, resetParser } = useTracklistParser({
   tracklistText,
   tracks,
+  files,
   syncManualTracksFromFiles,
   syncTargetFileNames,
   onError: (error) => setStatus("error", stringifyError(error)),
@@ -81,14 +85,29 @@ const languageOptions = computed(() =>
     label: localeNames[key],
   })),
 );
-const countMessage = computed(() => {
-  return `${text.value.fileCount}: ${files.value.length} / ${text.value.trackCount}: ${tracks.value.length}`;
+const validPairs = computed(() => {
+  const pairs: { file: MusicFile; track: TrackMetadata; index: number }[] = [];
+  const len = Math.min(files.value.length, tracks.value.length);
+  for (let i = 0; i < len; i++) {
+    const f = files.value[i];
+    const t = tracks.value[i];
+    if (f && f.path && t && t.number > 0 && t.title.trim()) {
+      pairs.push({ file: f, track: t, index: i });
+    }
+  }
+  return pairs;
 });
-const countState = computed(() =>
-  files.value.length > 0 && tracks.value.length > 0 && files.value.length === tracks.value.length
-    ? "ok"
-    : "error",
-);
+
+const countMessage = computed(() => {
+  const fileCount = files.value.filter((f) => f && f.path).length;
+  const trackCount = tracks.value.filter((t) => t && t.title.trim()).length;
+  return `${text.value.fileCount}: ${fileCount} / ${text.value.trackCount}: ${trackCount}`;
+});
+const countState = computed(() => {
+  const fileCount = files.value.filter((f) => f && f.path).length;
+  const trackCount = tracks.value.filter((t) => t && t.title.trim()).length;
+  return fileCount > 0 && trackCount > 0 && fileCount === trackCount ? "ok" : "error";
+});
 const showCountMessage = computed(() => files.value.length > 0 || tracks.value.length > 0);
 const displayStatusText = computed(() => statusText.value || (showCountMessage.value ? countMessage.value : ""));
 const displayStatusKind = computed<StatusKind>(() => {
@@ -96,10 +115,21 @@ const displayStatusKind = computed<StatusKind>(() => {
   return countState.value === "ok" ? "success" : "error";
 });
 const hasInvalidTracks = computed(() =>
-  tracks.value.some((track) => !track.title.trim() || !track.artist.trim()),
+  tracks.value.some(
+    (track) =>
+      track.number > 0 &&
+      (!track.title.trim() || (!track.artist.trim() && !albumArtist.value.trim())),
+  ),
+);
+const hasUnpairedTracks = computed(() =>
+  tracks.value.some((track, index) => {
+    if (!track || track.number === 0 || !track.title.trim()) return false;
+    const file = files.value[index];
+    return !file || !file.path;
+  }),
 );
 const hasInvalidTargetFiles = computed(() =>
-  tracks.value.some((_, index) => !displayTargetFileName(index).trim()),
+  validPairs.value.some((p) => !displayTargetFileName(p.index).trim()),
 );
 const albumYearNumber = computed(() => {
   const trimmed = String(albumYear.value).trim();
@@ -124,11 +154,10 @@ const canSubmit = computed(
       folderPath.value.trim() &&
         albumTitle.value.trim() &&
         !hasInvalidAlbumYear.value &&
-        coverPath.value.trim() &&
-        tracks.value.length > 0 &&
+        validPairs.value.length > 0 &&
         !hasInvalidTracks.value &&
+        !hasUnpairedTracks.value &&
         !hasInvalidTargetFiles.value &&
-        files.value.length === tracks.value.length &&
         !isBusy.value,
     ),
 );
@@ -155,8 +184,21 @@ async function refreshFiles(
     const scannedFiles = await scanAlbumFolder(selectedFolder);
     if (requestId !== folderRequestId || folderPath.value !== selectedFolder) return;
 
-    files.value = scannedFiles;
-    syncManualTracksFromFiles();
+    if (tracks.value.length > 0 && tracklistText.value.trim()) {
+      const validTracks = tracks.value.filter((t) => t && t.title.trim());
+      if (validTracks.length > 0) {
+        const aligned = await alignTracks(scannedFiles, validTracks);
+        files.value = aligned.map((a) => a.file ?? { fileName: "-", path: "", artist: null });
+        tracks.value = aligned.map((a) => a.track ?? { number: 0, title: "", artist: "" });
+      } else {
+        files.value = scannedFiles;
+        syncManualTracksFromFiles();
+      }
+    } else {
+      files.value = scannedFiles;
+      syncManualTracksFromFiles();
+    }
+
     syncTargetFileNames(true);
     await applyAlbumSuggestions(selectedFolder, requestId);
   } catch (error) {
@@ -212,9 +254,11 @@ async function submit() {
       "error",
       hasInvalidAlbumYear.value
         ? text.value.invalidYear
-        : showCountMessage.value
-          ? countMessage.value
-          : text.value.emptyPreview,
+        : hasUnpairedTracks.value
+          ? text.value.unpairedTracks
+          : showCountMessage.value
+            ? countMessage.value
+            : text.value.emptyPreview,
     );
     return;
   }
@@ -223,25 +267,33 @@ async function submit() {
   setStatus("info", text.value.updating);
 
   try {
+    const pairs = validPairs.value;
     const result = await applyAlbumMetadata({
       folderPath: folderPath.value,
+      filePaths: pairs.map((p) => p.file.path),
       albumTitle: albumTitle.value,
       albumArtist: albumArtist.value,
       albumYear: albumYearNumber.value,
-      coverPath: coverPath.value,
-      tracks: tracks.value.map((track, index) => ({
-        targetFileName: displayTargetFileName(index).trim(),
-        number: track.number,
-        title: track.title.trim(),
-        artist: track.artist.trim(),
+      coverPath: coverPath.value.trim(),
+      renameFolder: renameFolder.value,
+      tracks: pairs.map((p) => ({
+        targetFileName: displayTargetFileName(p.index).trim(),
+        number: p.track.number,
+        title: p.track.title.trim(),
+        artist: p.track.artist.trim(),
       })),
     });
     setStatus("success", `${text.value.success}: ${result.updatedCount}`);
     folderPath.value = result.folderPath;
     files.value = result.files.map((file) => ({
       fileName: file.fileName,
-      path: `${result.folderPath}\\${file.fileName}`,
+      path: file.path,
       artist: file.artist,
+    }));
+    tracks.value = pairs.map((p, idx) => ({
+      ...p.track,
+      artist: result.files[idx]?.artist || p.track.artist,
+      targetFileName: result.files[idx]?.fileName,
     }));
     syncTargetFileNames(true);
   } catch (error) {
@@ -389,6 +441,10 @@ function stringifyError(error: unknown): string {
               </button>
             </div>
             <p class="path-text">{{ folderPath || text.noFolder }}</p>
+            <label class="checkbox-row">
+              <input v-model="renameFolder" type="checkbox" :disabled="isBusy" />
+              <span>{{ text.renameFolder }}</span>
+            </label>
           </section>
         </div>
 

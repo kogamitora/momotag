@@ -26,6 +26,14 @@ const rows = computed(() => {
     track: props.tracks[index],
   }));
 });
+
+function isFileOnly(row: { file?: MusicFile; track?: TrackMetadata }): boolean {
+  return Boolean(
+    row.file &&
+      row.file.path &&
+      (!row.track || row.track.number === 0 || !row.track.title.trim()),
+  );
+}
 </script>
 
 <template>
@@ -44,34 +52,39 @@ const rows = computed(() => {
         <tr v-for="(row, index) in rows" :key="index">
           <td class="file-name-cell">
             <input
-              v-if="row.file"
+              v-if="row.file && row.file.path && row.track && row.track.number > 0"
               class="table-input file-name-input"
               :value="displayTargetFileName(index)"
               :aria-label="text.targetFile"
               @input="emit('target-file-name-input', index, ($event.target as HTMLInputElement).value)"
             />
-            <span v-else>-</span>
+            <span v-else-if="row.file && row.file.path" class="unpaired-file-name">{{ row.file.fileName }}</span>
+            <span v-else class="cell-placeholder">-</span>
           </td>
-          <td>{{ row.track?.number || "-" }}</td>
+          <td>{{ row.track && row.track.number > 0 ? row.track.number : "-" }}</td>
           <td>
             <input
+              v-if="row.track && row.track.number > 0"
               class="table-input"
               :value="tracks[index]?.title ?? ''"
               :aria-label="text.title"
               @input="emit('track-input', index, 'title', ($event.target as HTMLInputElement).value)"
             />
+            <span v-else class="cell-placeholder">-</span>
           </td>
           <td>
             <input
+              v-if="row.track && row.track.number > 0"
               class="table-input"
               :value="tracks[index]?.artist ?? ''"
               :aria-label="text.artist"
               @input="emit('track-input', index, 'artist', ($event.target as HTMLInputElement).value)"
             />
+            <span v-else class="cell-placeholder">-</span>
           </td>
           <td class="actions-cell">
             <div
-              v-if="row.track"
+              v-if="(row.track && row.track.number > 0) || (row.file && row.file.path)"
               class="delete-popover-wrap"
               :class="{
                 'delete-popover-wrap-active': pendingDeleteIndex === index,
@@ -81,7 +94,7 @@ const rows = computed(() => {
               <button
                 class="row-action-button"
                 type="button"
-                :title="text.deleteTrack"
+                :title="isFileOnly(row) ? text.excludeFile : text.deleteTrack"
                 :aria-expanded="pendingDeleteIndex === index"
                 @click="emit('request-remove', index)"
               >
@@ -92,10 +105,10 @@ const rows = computed(() => {
                 class="delete-popover"
                 :class="{ 'delete-popover-below': index < 2 }"
               >
-                <span>{{ text.confirmDeleteTrack }}</span>
+                <span>{{ isFileOnly(row) ? text.confirmExcludeFile : text.confirmDeleteTrack }}</span>
                 <div class="delete-popover-actions">
                   <button class="confirm-delete-button" type="button" @click="emit('remove', index)">
-                    {{ text.deleteTrack }}
+                    {{ isFileOnly(row) ? text.excludeFile : text.deleteTrack }}
                   </button>
                   <button class="cancel-delete-button" type="button" @click="emit('cancel-remove')">
                     {{ text.cancel }}
@@ -235,7 +248,19 @@ td { color: #20252b; overflow-wrap: anywhere; }
 .confirm-delete-button { background: #a13b2a; color: #ffffff; }
 .confirm-delete-button:hover { background: #8c3123; }
 .cancel-delete-button { background: #eef2f4; color: #48515b; }
-.cancel-delete-button:hover { background: #e3e9ec; }
-
 .empty-preview { color: #68717d; margin: 0; padding: 22px 20px; }
+
+.cell-placeholder {
+  color: #8c9ba5;
+  display: inline-block;
+  padding: 6px 7px;
+}
+
+.unpaired-file-name {
+  color: #65717d;
+  display: inline-block;
+  font-style: italic;
+  padding: 6px 7px;
+  word-break: break-all;
+}
 </style>

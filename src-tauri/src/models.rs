@@ -44,7 +44,7 @@ impl AppError {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackMetadata {
     pub number: u32,
@@ -53,7 +53,7 @@ pub struct TrackMetadata {
     pub target_file_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicFile {
     pub path: String,
@@ -73,10 +73,18 @@ pub struct AlbumMetadataSuggestion {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyMetadataRequest {
     pub folder_path: String,
+    /// Exact files to write, in the same order as `tracks`. Rows removed in
+    /// the editor are simply absent here and stay untouched on disk.
+    pub file_paths: Vec<String>,
     pub album_title: String,
     pub album_artist: String,
     pub album_year: Option<u16>,
+    /// Empty string means "keep existing embedded artwork".
+    #[serde(default)]
     pub cover_path: String,
+    /// Rename the album folder to the album title after writing.
+    #[serde(default)]
+    pub rename_folder: bool,
     pub tracks: Vec<TrackMetadata>,
 }
 
@@ -85,6 +93,7 @@ pub struct ApplyMetadataRequest {
 pub struct UpdatedFile {
     pub original_file_name: String,
     pub file_name: String,
+    pub path: String,
     pub title: String,
     pub artist: String,
 }
@@ -94,7 +103,7 @@ pub struct UpdatedFile {
 pub struct ApplyMetadataResult {
     pub updated_count: usize,
     pub folder_path: String,
-    pub cover_path: String,
+    pub cover_path: Option<String>,
     pub files: Vec<UpdatedFile>,
 }
 
@@ -103,4 +112,11 @@ pub struct ApplyMetadataResult {
 pub struct CoverPreviewImage {
     pub mime_type: String,
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlignedItem {
+    pub file: Option<MusicFile>,
+    pub track: Option<TrackMetadata>,
 }

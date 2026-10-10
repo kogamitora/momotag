@@ -24,16 +24,21 @@ export interface TrackMetadata {
 
 export interface ApplyMetadataRequest {
   folderPath: string;
+  /** Exact files to write, paired by index with `tracks`. */
+  filePaths: string[];
   albumTitle: string;
   albumArtist: string;
   albumYear?: number | null;
+  /** Empty string keeps the existing embedded artwork. */
   coverPath: string;
+  renameFolder: boolean;
   tracks: TrackMetadata[];
 }
 
 export interface UpdatedFile {
   originalFileName: string;
   fileName: string;
+  path: string;
   title: string;
   artist: string;
 }
@@ -41,11 +46,16 @@ export interface UpdatedFile {
 export interface ApplyMetadataResult {
   updatedCount: number;
   folderPath: string;
-  coverPath: string;
+  coverPath: string | null;
   files: UpdatedFile[];
 }
 
 export interface CoverPreviewImage {
   mimeType: string;
   data: number[];
+}
+
+export interface AlignedItem {
+  file: MusicFile | null;
+  track: TrackMetadata | null;
 }
