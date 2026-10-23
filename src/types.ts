@@ -13,6 +13,7 @@ export interface AlbumMetadataSuggestion {
   albumTitle: string | null;
   albumArtist: string | null;
   albumYear: number | null;
+  coverPath?: string | null;
 }
 
 export interface TrackMetadata {
@@ -48,6 +49,7 @@ export interface ApplyMetadataResult {
   folderPath: string;
   coverPath: string | null;
   files: UpdatedFile[];
+  warning?: string | null;
 }
 
 export interface CoverPreviewImage {

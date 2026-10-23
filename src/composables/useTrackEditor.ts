@@ -24,8 +24,18 @@ export function useTrackEditor(tracklistText: Ref<string>) {
   }
 
   function displayTargetFileName(index: number): string {
-    if (editedTargetFileNames.value[index]) return targetFileNames.value[index] ?? "";
+    if (editedTargetFileNames.value[index]) {
+      return withOriginalExtension(index, targetFileNames.value[index] ?? "");
+    }
     return targetFileNames.value[index] || defaultTargetFileName(index);
+  }
+
+  function withOriginalExtension(index: number, fileName: string): string {
+    const originalName = files.value[index]?.fileName;
+    const originalExtension = originalName?.split(".").pop();
+    if (!originalExtension || !fileName) return fileName;
+    const baseName = fileName.replace(/\.[^.]*$/, "").replace(/[. ]+$/, "");
+    return baseName ? `${baseName}.${originalExtension}` : `.${originalExtension}`;
   }
 
   function defaultTargetFileName(index: number): string {

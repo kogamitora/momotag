@@ -3,6 +3,7 @@ mod audio;
 mod commands;
 mod cover;
 mod filesystem;
+mod logger;
 mod metadata;
 mod models;
 mod parser;
@@ -10,9 +11,11 @@ mod transaction;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    logger::init_logger();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::align_tracks,
             commands::apply_album_metadata,

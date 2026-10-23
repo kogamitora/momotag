@@ -67,6 +67,7 @@ pub struct AlbumMetadataSuggestion {
     pub album_title: Option<String>,
     pub album_artist: Option<String>,
     pub album_year: Option<u16>,
+    pub cover_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +106,8 @@ pub struct ApplyMetadataResult {
     pub folder_path: String,
     pub cover_path: Option<String>,
     pub files: Vec<UpdatedFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

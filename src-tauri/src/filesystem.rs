@@ -1,13 +1,68 @@
+use crate::logger::{log_info, log_warn};
 use crate::models::MusicFile;
 use lofty::file::TaggedFileExt;
 use lofty::prelude::Accessor;
 use std::cmp::Ordering;
+use std::fmt::Display;
 use std::fs;
 use std::path::Path;
 
 const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "wav", "m4a", "ogg", "opus", "aiff", "aif", "ape", "wv",
 ];
+
+pub(crate) fn is_transient_fs_error(err: &std::io::Error) -> bool {
+    // On Windows these are sharing violations, lock violations, and the
+    // transient access-denied result commonly produced while another process
+    // is releasing a handle. A generic PermissionDenied without a Windows
+    // code may be a real ACL/read-only failure and should fail immediately.
+    #[cfg(windows)]
+    {
+        matches!(err.raw_os_error(), Some(5 | 32 | 33))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = err;
+        false
+    }
+}
+
+/// Retry an operation with short backoff when the OS reports transient
+/// locking/sharing or permission errors (e.g. Windows SearchIndexer, Explorer
+/// property handler, or Defender briefly holding a handle).
+pub(crate) fn retry_transient<T, E, F, P>(mut op: F, is_transient: P) -> Result<T, E>
+where
+    E: Display,
+    F: FnMut() -> Result<T, E>,
+    P: Fn(&E) -> bool,
+{
+    let delays_ms = [60, 120, 240, 480];
+    for (attempt, delay) in delays_ms.into_iter().enumerate() {
+        match op() {
+            Ok(val) => return Ok(val),
+            Err(err) if is_transient(&err) => {
+                log_warn(
+                    "fs::retry",
+                    format!(
+                        "transient OS lock/permission error (attempt {}/{}, retrying in {delay}ms): {err}",
+                        attempt + 1,
+                        delays_ms.len()
+                    ),
+                );
+                std::thread::sleep(std::time::Duration::from_millis(delay));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    op()
+}
+
+pub(crate) fn retry_io<T, F>(op: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    retry_transient(op, is_transient_fs_error)
+}
 
 pub(crate) fn scan_music_files(folder_path: &str) -> Result<Vec<MusicFile>, String> {
     let folder = Path::new(folder_path);
@@ -24,6 +79,14 @@ pub(crate) fn scan_music_files(folder_path: &str) -> Result<Vec<MusicFile>, Stri
         .collect::<Vec<_>>();
 
     files.sort_by(|left, right| natural_cmp(&left.file_name, &right.file_name));
+    log_info(
+        "scan",
+        format!(
+            "scanned folder={} found {} audio files",
+            folder.display(),
+            files.len()
+        ),
+    );
     Ok(files)
 }
 
@@ -44,6 +107,31 @@ pub(crate) fn music_file_from_path(path: &Path) -> MusicFile {
         path: path.display().to_string(),
         artist,
     }
+}
+
+pub(crate) fn find_folder_cover(folder_path: &str) -> Option<String> {
+    let folder = Path::new(folder_path);
+    let candidates = [
+        "cover.jpg",
+        "cover.jpeg",
+        "cover.png",
+        "cover.webp",
+        "folder.jpg",
+        "folder.jpeg",
+        "folder.png",
+        "folder.webp",
+        "front.jpg",
+        "front.jpeg",
+        "front.png",
+        "front.webp",
+    ];
+    for name in candidates {
+        let candidate = folder.join(name);
+        if candidate.is_file() {
+            return Some(candidate.display().to_string());
+        }
+    }
+    None
 }
 
 pub(crate) fn is_supported_audio_file(path: &Path) -> bool {
@@ -110,11 +198,21 @@ mod tests {
 
     #[test]
     fn sorts_embedded_numbers_naturally() {
-        let mut names = vec!["Track 10.flac", "Track 2.flac", "Track 1.flac", "track 3.flac"];
+        let mut names = vec![
+            "Track 10.flac",
+            "Track 2.flac",
+            "Track 1.flac",
+            "track 3.flac",
+        ];
         names.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(
             names,
-            vec!["Track 1.flac", "Track 2.flac", "track 3.flac", "Track 10.flac"]
+            vec![
+                "Track 1.flac",
+                "Track 2.flac",
+                "track 3.flac",
+                "Track 10.flac"
+            ]
         );
     }
 
