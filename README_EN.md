@@ -69,9 +69,17 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 `bun run tauri build --no-bundle` compiles the application without creating an installer and is useful for fast local validation.
 
+## Branching and collaboration
+
+- `main` is the only long-lived integration branch and should remain releasable. Merge changes through pull requests.
+- Create short-lived `feature/<name>` branches from the latest `main`. Open a PR back to `main`; merge after review and passing CI.
+- Before a release, create a temporary `release/vX.Y.Z` branch from `main`. Use it only for version updates, release preparation, and release-blocking fixes—not new features.
+- Merge the release branch into `main`, then create the `vX.Y.Z` tag on the verified `main` commit. Delete the temporary branch after release.
+- Do not use a long-lived `develop` branch. Merging to `main` does not publish a release; only pushing a `v*` tag triggers the release workflow.
+
 ## Releases and automatic updates
 
-The release workflow is `.github/workflows/release.yml`. Pushing a `v*` tag makes GitHub Actions build Windows, macOS, and Ubuntu artifacts and create a draft Release with Tauri updater metadata.
+The release workflow is `.github/workflows/release.yml`. Pushing a `v*` tag makes GitHub Actions build Windows, macOS, and Ubuntu artifacts and create a draft Release with Tauri updater metadata. See [RELEASING.md](RELEASING.md) for the complete branch and release procedure.
 
 Read [RELEASING.md](RELEASING.md) before publishing. Keep the version consistent in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`. Never commit the updater private key.
 

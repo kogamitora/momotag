@@ -69,9 +69,17 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 `bun run tauri build --no-bundle` 会编译应用但不生成安装包，适合快速验证 Rust、前端和 Tauri 配置。
 
+## 分支与协作
+
+- `main` 是唯一长期维护的集成分支，保持可发布状态；所有改动通过 Pull Request 合入。
+- 新功能从最新 `main` 创建短期 `feature/<名称>` 分支。完成后开 PR 到 `main`，等待 CI 通过并审核后合并。
+- 发布前从 `main` 创建临时 `release/vX.Y.Z` 分支，只做版本号、发布准备和阻断问题修复，不在其中开发新功能。
+- 发布分支合入 `main` 后，在已验证的 `main` 提交上创建 `vX.Y.Z` 标签。发布完成后删除临时分支。
+- 不再使用长期 `develop` 分支；日常合并到 `main` 不会自动发布，只有推送 `v*` 标签才会触发发布工作流。
+
 ## 发布与自动更新
 
-发布工作流位于 `.github/workflows/release.yml`。推送 `v*` 格式的 Git tag 后，GitHub Actions 会在 Windows、macOS 和 Ubuntu 上构建并创建草稿 Release，同时生成 Tauri updater 元数据。
+发布工作流位于 `.github/workflows/release.yml`。推送 `v*` 格式的 Git tag 后，GitHub Actions 会在 Windows、macOS 和 Ubuntu 上构建并创建草稿 Release，同时生成 Tauri updater 元数据。完整分支和发布步骤见 [RELEASING.md](RELEASING.md)。
 
 发布前请阅读 [RELEASING.md](RELEASING.md)，并确保版本号在 `package.json`、`src-tauri/tauri.conf.json` 和 `src-tauri/Cargo.toml` 中保持一致。签名私钥只应保存在 GitHub Actions Secrets 中，不要提交到仓库。
 
