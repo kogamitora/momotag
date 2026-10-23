@@ -5,6 +5,10 @@ export function useCoverPreview(onError: (error: unknown) => void) {
   const coverPath = ref("");
   const coverPreview = ref("");
   const isCoverPreviewOpen = ref(false);
+  const isCoverLoading = ref(false);
+  let coverRequestId = 0;
+  let lastHandledSource = "";
+  let loadingSource = "";
 
   watch(coverPreview, (preview) => {
     if (!preview) isCoverPreviewOpen.value = false;
@@ -21,31 +25,52 @@ export function useCoverPreview(onError: (error: unknown) => void) {
     if (!selected) return;
 
     coverPath.value = selected;
-    await refreshCoverPreview(selected);
+    await handleCoverSourceChange();
   }
 
   async function handleCoverSourceChange() {
     const source = coverPath.value.trim();
+    if (source === lastHandledSource) return;
+
     if (!source) {
+      coverRequestId += 1;
+      lastHandledSource = "";
+      loadingSource = "";
+      isCoverLoading.value = false;
       revokePreview();
       coverPreview.value = "";
       return;
     }
 
+    lastHandledSource = source;
+    if (source === loadingSource) return;
     await refreshCoverPreview(source);
   }
 
   async function refreshCoverPreview(path: string) {
+    const currentId = ++coverRequestId;
+    loadingSource = path;
+    isCoverLoading.value = true;
     try {
       const image = await loadCoverPreview(path);
+      if (currentId !== coverRequestId) return;
       revokePreview();
       coverPreview.value = URL.createObjectURL(
         new Blob([new Uint8Array(image.data)], { type: image.mimeType }),
       );
     } catch (error) {
+      if (currentId !== coverRequestId) return;
       revokePreview();
       coverPreview.value = "";
+      // Keep failed sources retryable: a later change/blur/Enter should retry
+      // the same URL or path instead of being treated as already handled.
+      lastHandledSource = "";
       onError(error);
+    } finally {
+      if (currentId === coverRequestId) {
+        loadingSource = "";
+        isCoverLoading.value = false;
+      }
     }
   }
 
@@ -58,6 +83,10 @@ export function useCoverPreview(onError: (error: unknown) => void) {
   }
 
   function resetCoverPreview() {
+    coverRequestId += 1;
+    lastHandledSource = "";
+    loadingSource = "";
+    isCoverLoading.value = false;
     revokePreview();
     coverPath.value = "";
     coverPreview.value = "";
@@ -76,6 +105,7 @@ export function useCoverPreview(onError: (error: unknown) => void) {
     coverPath,
     coverPreview,
     isCoverPreviewOpen,
+    isCoverLoading,
     pickCover,
     handleCoverSourceChange,
     openCoverPreview,

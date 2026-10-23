@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { check } from "@tauri-apps/plugin-updater";
+import { isTauri } from "@tauri-apps/api/core";
 import {
   FolderOpen,
   ImagePlus,
@@ -15,6 +17,7 @@ import {
   applyAlbumMetadata,
   chooseAlbumFolder,
   scanAlbumFolder,
+  parseTracklist,
   suggestAlbumMetadata,
 } from "./api/musicTags";
 import { detectLocale, labels, localeNames, type Locale } from "./i18n";
@@ -27,7 +30,7 @@ import TrackTable from "./components/TrackTable.vue";
 import AlbumPreview from "./components/AlbumPreview.vue";
 import StatusBar from "./components/StatusBar.vue";
 
-type StatusKind = "idle" | "info" | "success" | "error";
+type StatusKind = "idle" | "info" | "success" | "warning" | "error";
 
 const locale = ref<Locale>(detectLocale());
 const albumTitle = ref("");
@@ -38,6 +41,7 @@ const tracklistText = ref("");
 const statusKind = ref<StatusKind>("idle");
 const statusText = ref("");
 const isBusy = ref(false);
+const isCheckingUpdates = ref(false);
 const renameFolder = ref(false);
 let folderRequestId = 0;
 const {
@@ -73,6 +77,7 @@ const {
   coverPath,
   coverPreview,
   isCoverPreviewOpen,
+  isCoverLoading,
   pickCover,
   handleCoverSourceChange,
   openCoverPreview,
@@ -85,6 +90,30 @@ const languageOptions = computed(() =>
     label: localeNames[key],
   })),
 );
+async function checkForUpdates(silent = false) {
+  if (!isTauri() || isCheckingUpdates.value) return;
+  isCheckingUpdates.value = true;
+  try {
+    const update = await check();
+    if (!update) {
+      if (!silent) setStatus("success", text.value.upToDate);
+      return;
+    }
+    const accepted = window.confirm(`${text.value.updateAvailable} (${update.version})\n\n${update.body ?? ""}`);
+    if (!accepted) {
+      await update.close();
+      return;
+    }
+    setStatus("info", text.value.downloadingUpdate);
+    await update.downloadAndInstall();
+  } catch (error) {
+    if (!silent) {
+      setStatus("error", `${text.value.updateCheckFailed}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } finally {
+    isCheckingUpdates.value = false;
+  }
+}
 const validPairs = computed(() => {
   const pairs: { file: MusicFile; track: TrackMetadata; index: number }[] = [];
   const len = Math.min(files.value.length, tracks.value.length);
@@ -128,6 +157,13 @@ const hasUnpairedTracks = computed(() =>
     return !file || !file.path;
   }),
 );
+const hasUnpairedFiles = computed(() =>
+  files.value.some((file, index) => {
+    if (!file || !file.path) return false;
+    const track = tracks.value[index];
+    return !track || track.number === 0 || !track.title.trim();
+  }),
+);
 const hasInvalidTargetFiles = computed(() =>
   validPairs.value.some((p) => !displayTargetFileName(p.index).trim()),
 );
@@ -145,9 +181,29 @@ const hasInvalidAlbumYear = computed(
 const albumPreviewMeta = computed(() =>
   [albumArtist.value.trim(), String(albumYear.value).trim()].filter(Boolean).join(" · "),
 );
+function handleCoverPaste(event: ClipboardEvent) {
+  const pasted = event.clipboardData?.getData("text")?.trim();
+  if (
+    pasted &&
+    (pasted.startsWith("http://") ||
+      pasted.startsWith("https://") ||
+      pasted.startsWith("/") ||
+      /^[a-zA-Z]:[\\/]/.test(pasted))
+  ) {
+    // We assign the clipboard text to v-model ourselves. Prevent the browser
+    // from also inserting it at the caret, which would duplicate the URL.
+    event.preventDefault();
+    coverPath.value = pasted;
+    handleCoverSourceChange();
+  }
+}
+
 const hasAlbumPreview = computed(() =>
-  Boolean(coverPreview.value || albumTitle.value.trim() || albumPreviewMeta.value),
+  Boolean(coverPreview.value || isCoverLoading.value || albumTitle.value.trim() || albumPreviewMeta.value),
 );
+onMounted(() => {
+  void checkForUpdates(true);
+});
 const canSubmit = computed(
   () =>
     Boolean(
@@ -157,6 +213,7 @@ const canSubmit = computed(
         validPairs.value.length > 0 &&
         !hasInvalidTracks.value &&
         !hasUnpairedTracks.value &&
+        !hasUnpairedFiles.value &&
         !hasInvalidTargetFiles.value &&
         !isBusy.value,
     ),
@@ -166,8 +223,8 @@ async function pickFolder() {
   const selected = await chooseAlbumFolder();
   if (!selected) return;
 
-  // A folder is a new editing session. Do not carry over tracks, metadata,
-  // cover state, or manually edited target names from the previous album.
+  // Selecting another album starts a fresh editing session. In particular,
+  // never align the new files against the previous album's tracks or cover.
   resetWorkspace();
   folderPath.value = selected;
   await refreshFiles(selected, folderRequestId);
@@ -184,16 +241,24 @@ async function refreshFiles(
     const scannedFiles = await scanAlbumFolder(selectedFolder);
     if (requestId !== folderRequestId || folderPath.value !== selectedFolder) return;
 
-    if (tracks.value.length > 0 && tracklistText.value.trim()) {
-      const validTracks = tracks.value.filter((t) => t && t.title.trim());
-      if (validTracks.length > 0) {
-        const aligned = await alignTracks(scannedFiles, validTracks);
-        files.value = aligned.map((a) => a.file ?? { fileName: "-", path: "", artist: null });
-        tracks.value = aligned.map((a) => a.track ?? { number: 0, title: "", artist: "" });
-      } else {
-        files.value = scannedFiles;
-        syncManualTracksFromFiles();
+    const hasTracklist = Boolean(tracklistText.value.trim());
+    let validTracks = tracks.value.filter((t) => t && t.title.trim());
+
+    if (validTracks.length === 0 && hasTracklist) {
+      try {
+        const parsed = await parseTracklist(tracklistText.value.trim());
+        if (parsed.length > 0) {
+          validTracks = parsed;
+        }
+      } catch {
+        // Ignore parsing errors here; parser handles reporting.
       }
+    }
+
+    if (validTracks.length > 0) {
+      const aligned = await alignTracks(scannedFiles, validTracks);
+      files.value = aligned.map((a) => a.file ?? { fileName: "-", path: "", artist: null });
+      tracks.value = aligned.map((a) => a.track ?? { number: 0, title: "", artist: "" });
     } else {
       files.value = scannedFiles;
       syncManualTracksFromFiles();
@@ -229,6 +294,11 @@ async function applyAlbumSuggestions(selectedFolder: string, requestId: number) 
     if (!albumYear.value.trim() && suggestion.albumYear) {
       albumYear.value = String(suggestion.albumYear);
     }
+
+    if (!coverPath.value.trim() && suggestion.coverPath) {
+      coverPath.value = suggestion.coverPath;
+      await handleCoverSourceChange();
+    }
   } catch {
     // Ignore metadata hints when the files do not expose readable album tags.
   }
@@ -236,6 +306,9 @@ async function applyAlbumSuggestions(selectedFolder: string, requestId: number) 
 
 function resetWorkspace() {
   folderRequestId += 1;
+  // Invalidate any in-flight scan and release the UI lock immediately. A
+  // stale request's finally block must not be responsible for clearing it.
+  isBusy.value = false;
   albumTitle.value = "";
   albumArtist.value = "";
   albumYear.value = "";
@@ -256,6 +329,8 @@ async function submit() {
         ? text.value.invalidYear
         : hasUnpairedTracks.value
           ? text.value.unpairedTracks
+          : hasUnpairedFiles.value
+            ? text.value.unpairedFiles
           : showCountMessage.value
             ? countMessage.value
             : text.value.emptyPreview,
@@ -283,8 +358,18 @@ async function submit() {
         artist: p.track.artist.trim(),
       })),
     });
-    setStatus("success", `${text.value.success}: ${result.updatedCount}`);
+    if (result.warning) {
+      setStatus(
+        "warning",
+        `${text.value.success}: ${result.updatedCount} (${text.value.partialSuccess})`,
+      );
+    } else {
+      setStatus("success", `${text.value.success}: ${result.updatedCount}`);
+    }
     folderPath.value = result.folderPath;
+    if (result.coverPath) {
+      coverPath.value = result.coverPath;
+    }
     files.value = result.files.map((file) => ({
       fileName: file.fileName,
       path: file.path,
@@ -370,6 +455,10 @@ function stringifyError(error: unknown): string {
           </option>
         </select>
       </label>
+      <button class="secondary-button" type="button" :disabled="isCheckingUpdates" @click="() => checkForUpdates()">
+        <LoaderCircle v-if="isCheckingUpdates" class="spin" :size="16" aria-hidden="true" />
+        <span>{{ isCheckingUpdates ? text.checkingUpdates : text.checkUpdates }}</span>
+      </button>
     </header>
 
     <section class="workspace">
@@ -416,20 +505,37 @@ function stringifyError(error: unknown): string {
         <div class="picker-grid">
           <section class="picker-panel cover-panel">
             <div class="panel-header">
-              <span>{{ text.cover }}</span>
-              <button class="icon-button" type="button" @click="pickCover">
+              <div class="inline-flex items-center gap-2">
+                <span>{{ text.cover }}</span>
+                <span v-if="isCoverLoading" class="subtle-status">
+                  <LoaderCircle class="spin" :size="13" aria-hidden="true" />
+                  {{ text.loadingCover }}
+                </span>
+              </div>
+              <button class="icon-button" type="button" :disabled="isCoverLoading" @click="pickCover">
                 <ImagePlus :size="18" aria-hidden="true" />
                 <span>{{ text.chooseCover }}</span>
               </button>
             </div>
-            <input
-              v-model="coverPath"
-              class="text-input cover-source-input"
-              type="text"
-              :placeholder="text.coverSourcePlaceholder"
-              @change="handleCoverSourceChange"
-              @blur="handleCoverSourceChange"
-            />
+            <div class="relative mt-2.5">
+              <input
+                v-model="coverPath"
+                class="text-input w-full"
+                :class="{ 'pr-8': isCoverLoading }"
+                type="text"
+                :placeholder="text.coverSourcePlaceholder"
+                @paste="handleCoverPaste"
+                @keydown.enter.prevent="handleCoverSourceChange"
+                @change="handleCoverSourceChange"
+                @blur="handleCoverSourceChange"
+              />
+              <div
+                v-if="isCoverLoading"
+                class="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-accent-dark"
+              >
+                <LoaderCircle class="spin" :size="15" aria-hidden="true" />
+              </div>
+            </div>
           </section>
 
           <section class="picker-panel">
@@ -493,10 +599,12 @@ function stringifyError(error: unknown): string {
         <AlbumPreview
           :visible="hasAlbumPreview"
           :cover-preview="coverPreview"
+          :is-loading-cover="isCoverLoading"
           :title="albumTitle"
           :meta="albumPreviewMeta"
           :preview-title="text.previewCover"
           :cover-alt="text.previewCover"
+          :loading-cover-text="text.loadingCover"
           @open-cover="openCoverPreview"
         />
 

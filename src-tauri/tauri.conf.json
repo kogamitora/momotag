@@ -18,12 +18,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: https://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -31,5 +32,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU3RDg2MUQxQzkzNzUwMUIKUldRYlVEZkowV0hZVjdFTDdLMnlXL1diRnZ4SXIwS3dMZER5MG9wNE91cGM4Z29QUHFiZVpwWkwK",
+      "endpoints": [
+        "https://github.com/kogamitora/momotag/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

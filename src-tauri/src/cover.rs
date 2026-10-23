@@ -1,13 +1,24 @@
+use crate::logger::{log_error, log_info};
 use crate::models::CoverPreviewImage;
+use image::codecs::jpeg::JpegEncoder;
+use image::imageops::FilterType;
+use image::ColorType;
 use lofty::picture::{Picture, PictureType};
 use reqwest::header::CONTENT_TYPE;
 use std::fs;
 use std::io::Cursor;
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
 const SUPPORTED_COVER_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 const MAX_COVER_BYTES: usize = 20 * 1024 * 1024;
+/// Windows Media Foundation (`mf.dll`) rejects FLAC files whose total metadata
+/// header exceeds 4 MiB (`4,194,304` bytes) with `MF_E_UNSUPPORTED_BYTESTREAM_TYPE`.
+/// Keeping embedded cover art under ~2.5 MiB guarantees safe playback across
+/// Windows Media Player and hardware/software decoders while the full-size
+/// cover file is still saved on disk in the album folder.
+const MAX_EMBEDDED_COVER_BYTES: usize = 2_500_000;
 
 pub(crate) struct CoverImageData {
     pub(crate) data: Vec<u8>,
@@ -35,6 +46,7 @@ pub(crate) fn read_cover_image(cover_path: &str) -> Result<CoverImageData, Strin
 
     let path = Path::new(source);
     if !path.is_file() {
+        log_error("cover", format!("local cover file does not exist: {source}"));
         return Err("Selected cover image does not exist.".to_string());
     }
 
@@ -42,8 +54,19 @@ pub(crate) fn read_cover_image(cover_path: &str) -> Result<CoverImageData, Strin
     let extension = cover_extension_from_mime_type(&mime_type)
         .or_else(|| cover_extension_from_path(path))
         .ok_or_else(|| "Cover image must be JPG, PNG, or WEBP.".to_string())?;
-    let data = fs::read(path).map_err(|err| format!("Could not read cover image: {err}"))?;
+    let data = fs::read(path).map_err(|err| {
+        log_error("cover", format!("failed to read local cover {source}: {err}"));
+        format!("Could not read cover image: {err}")
+    })?;
     validate_cover_size(data.len())?;
+
+    log_info(
+        "cover",
+        format!(
+            "loaded local cover path={source} mime={mime_type} size={}B",
+            data.len()
+        ),
+    );
 
     Ok(CoverImageData {
         data,
@@ -53,6 +76,7 @@ pub(crate) fn read_cover_image(cover_path: &str) -> Result<CoverImageData, Strin
 }
 
 fn download_cover_image(url: &str) -> Result<CoverImageData, String> {
+    log_info("cover", format!("downloading remote cover url={url}"));
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent("momotag-cover-loader")
@@ -60,9 +84,15 @@ fn download_cover_image(url: &str) -> Result<CoverImageData, String> {
         .map_err(|err| format!("Could not prepare image download: {err}"))?
         .get(url)
         .send()
-        .map_err(|err| format!("Could not download cover image: {err}"))?
+        .map_err(|err| {
+            log_error("cover", format!("remote cover request failed url={url}: {err}"));
+            format!("Could not download cover image: {err}")
+        })?
         .error_for_status()
-        .map_err(|err| format!("Could not download cover image: {err}"))?;
+        .map_err(|err| {
+            log_error("cover", format!("remote cover HTTP status error url={url}: {err}"));
+            format!("Could not download cover image: {err}")
+        })?;
 
     if response
         .content_length()
@@ -79,10 +109,14 @@ fn download_cover_image(url: &str) -> Result<CoverImageData, String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let data = response
-        .bytes()
-        .map_err(|err| format!("Could not read downloaded cover image: {err}"))?
-        .to_vec();
+    // Do not rely on Content-Length: servers may omit or falsify it. Read at
+    // most one byte beyond the configured limit so oversized responses are
+    // rejected without buffering an unbounded payload in memory.
+    let mut limited_response = response.take(MAX_COVER_BYTES as u64 + 1);
+    let mut data = Vec::with_capacity(MAX_COVER_BYTES.min(1024 * 1024));
+    limited_response
+        .read_to_end(&mut data)
+        .map_err(|err| format!("Could not read downloaded cover image: {err}"))?;
     validate_cover_size(data.len())?;
 
     let mime_type = header_mime_type
@@ -96,6 +130,14 @@ fn download_cover_image(url: &str) -> Result<CoverImageData, String> {
         .ok_or_else(|| "Cover image must be JPG, PNG, or WEBP.".to_string())?;
     let extension = cover_extension_from_mime_type(&mime_type)
         .ok_or_else(|| "Cover image must be JPG, PNG, or WEBP.".to_string())?;
+
+    log_info(
+        "cover",
+        format!(
+            "downloaded remote cover url={url} mime={mime_type} size={}B",
+            data.len()
+        ),
+    );
 
     Ok(CoverImageData {
         data,
@@ -180,11 +222,82 @@ fn infer_cover_mime_type_from_bytes(data: &[u8]) -> Option<String> {
 }
 
 pub(crate) fn cover_picture(data: &[u8]) -> Result<Picture, String> {
-    let mut cursor = Cursor::new(data);
+    let embedded_bytes = optimize_cover_for_embedding(data)?;
+    let mut cursor = Cursor::new(embedded_bytes.as_slice());
     let mut picture =
         Picture::from_reader(&mut cursor).map_err(|err| format!("Invalid cover image: {err}"))?;
     picture.set_pic_type(PictureType::CoverFront);
     Ok(picture)
+}
+
+fn optimize_cover_for_embedding(data: &[u8]) -> Result<Vec<u8>, String> {
+    let mime = infer_cover_mime_type_from_bytes(data).unwrap_or_else(|| "unknown".to_string());
+    let is_webp = mime == "image/webp";
+    if !is_webp && data.len() <= MAX_EMBEDDED_COVER_BYTES {
+        log_info(
+            "cover::embed",
+            format!(
+                "using original cover for embedding without re-encoding (mime={mime}, size={}B <= {MAX_EMBEDDED_COVER_BYTES}B)",
+                data.len()
+            ),
+        );
+        return Ok(data.to_vec());
+    }
+
+    let decoded = image::load_from_memory(data).map_err(|err| {
+        log_error("cover::embed", format!("failed to decode cover for optimization: {err}"));
+        format!("Invalid cover image: {err}")
+    })?;
+
+    for &(max_dim, quality) in &[
+        (0u32, 90u8),
+        (0u32, 82u8),
+        (1600u32, 88u8),
+        (1400u32, 82u8),
+        (1000u32, 80u8),
+    ] {
+        let candidate = if max_dim > 0 && (decoded.width() > max_dim || decoded.height() > max_dim)
+        {
+            decoded.resize(max_dim, max_dim, FilterType::Lanczos3)
+        } else {
+            decoded.clone()
+        };
+        let rgb = candidate.to_rgb8();
+        let mut buf = Vec::new();
+        let mut encoder = JpegEncoder::new_with_quality(&mut buf, quality);
+        encoder
+            .encode(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                ColorType::Rgb8.into(),
+            )
+            .map_err(|err| format!("Invalid cover image: {err}"))?;
+        if buf.len() <= MAX_EMBEDDED_COVER_BYTES {
+            log_info(
+                "cover::embed",
+                format!(
+                    "optimized cover for embedding: original={}B ({mime}, {}x{}) -> embedded={}B (image/jpeg, {}x{}, quality={quality})",
+                    data.len(),
+                    decoded.width(),
+                    decoded.height(),
+                    buf.len(),
+                    rgb.width(),
+                    rgb.height()
+                ),
+            );
+            return Ok(buf);
+        }
+    }
+
+    log_error(
+        "cover::embed",
+        format!(
+            "cover image remains > {MAX_EMBEDDED_COVER_BYTES}B even after downscaling (original={}B)",
+            data.len()
+        ),
+    );
+    Err("Cover image is too large.".to_string())
 }
 
 fn is_http_url(value: &str) -> bool {
@@ -193,7 +306,12 @@ fn is_http_url(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{cover_extension_from_url, infer_cover_mime_type_from_bytes, validate_cover_size};
+    use super::{
+        cover_extension_from_url, infer_cover_mime_type_from_bytes, optimize_cover_for_embedding,
+        validate_cover_size, MAX_EMBEDDED_COVER_BYTES,
+    };
+    use image::{ImageBuffer, ImageFormat, Rgb};
+    use std::io::Cursor;
 
     #[test]
     fn detects_supported_image_signatures() {
@@ -228,5 +346,26 @@ mod tests {
         assert!(validate_cover_size(1).is_ok());
         assert!(validate_cover_size(0).is_err());
         assert!(validate_cover_size(20 * 1024 * 1024 + 1).is_err());
+    }
+
+    #[test]
+    fn compresses_oversized_png_for_embedding() {
+        let img = ImageBuffer::from_fn(1200, 1200, |x, y| {
+            let r = (x.wrapping_mul(2654435761) ^ y.wrapping_mul(2246822519)) as u8;
+            let g = (x.wrapping_mul(3266489917) ^ y.wrapping_mul(668265263)) as u8;
+            let b = (x ^ y).wrapping_mul(374761393) as u8;
+            Rgb([r, g, b])
+        });
+        let mut png_bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
+            .unwrap();
+        assert!(png_bytes.len() > MAX_EMBEDDED_COVER_BYTES);
+
+        let optimized = optimize_cover_for_embedding(&png_bytes).unwrap();
+        assert!(optimized.len() <= MAX_EMBEDDED_COVER_BYTES);
+        assert_eq!(
+            infer_cover_mime_type_from_bytes(&optimized),
+            Some("image/jpeg".to_string())
+        );
     }
 }
