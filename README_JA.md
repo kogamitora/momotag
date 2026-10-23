@@ -69,9 +69,17 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 `bun run tauri build --no-bundle` はインストーラーを作成せずにアプリをコンパイルします。
 
+## ブランチ運用
+
+- 長期運用する統合ブランチは `main` のみとし、常にリリース可能な状態を保ちます。変更は Pull Request 経由で取り込みます。
+- 新機能は最新の `main` から短期の `feature/<名前>` ブランチを作成します。完了後に `main` 宛ての PR を作成し、レビューと CI 成功後にマージします。
+- リリース前に `main` から一時的な `release/vX.Y.Z` ブランチを作成します。バージョン更新、リリース準備、リリースを妨げる問題の修正だけを行い、新機能は追加しません。
+- リリースブランチを `main` にマージし、検証済み `main` コミットに `vX.Y.Z` タグを作成します。リリース後、一時ブランチを削除します。
+- 長期の `develop` ブランチは使用しません。`main` へのマージだけではリリースされず、`v*` タグの push でリリースワークフローが起動します。
+
 ## リリースと自動更新
 
-リリースワークフローは `.github/workflows/release.yml` にあります。`v*` 形式の Git tag を push すると、GitHub Actions が Windows、macOS、Ubuntu 向けにビルドし、Tauri updater 用メタデータを含む draft Release を作成します。
+リリースワークフローは `.github/workflows/release.yml` にあります。`v*` 形式の Git tag を push すると、GitHub Actions が Windows、macOS、Ubuntu 向けにビルドし、Tauri updater 用メタデータを含む draft Release を作成します。詳しいブランチ運用と手順は [RELEASING.md](RELEASING.md) を参照してください。
 
 公開前に [RELEASING.md](RELEASING.md) を確認してください。`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` のバージョンを一致させ、updater の秘密鍵は絶対にコミットしないでください。
 
