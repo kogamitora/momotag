@@ -1,8 +1,10 @@
 # MomoTag
 
+[中文](README.md) · [日本語](README_JA.md) · [English](README_EN.md)
+
 MomoTag is a desktop music-tagging tool for local albums, including doujin CDs and digital releases. Choose an album folder, paste a tracklist, select a cover, and write album, artist, year, track, and cover metadata in one pass.
 
-The interface supports Chinese, Japanese, and English.
+The interface supports Chinese, Japanese, and English. The default language follows the system language: Japanese systems use Japanese, Chinese systems use Chinese, and all other systems use English. You can also switch languages manually in the app.
 
 ## Features
 
