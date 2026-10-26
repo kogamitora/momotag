@@ -21,8 +21,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let check_updates = MenuItemBuilder::with_id("check_updates", "检查更新").build(app)?;
-            let quit = PredefinedMenuItem::quit(app, Some("退出应用"))?;
+            let check_updates =
+                MenuItemBuilder::with_id("check_updates", "Check for updates").build(app)?;
+            let quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
             let menu = MenuBuilder::new(app)
                 .items(&[&check_updates, &quit])
                 .build()?;
