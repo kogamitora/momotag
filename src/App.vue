@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { check } from "@tauri-apps/plugin-updater";
 import { isTauri } from "@tauri-apps/api/core";
 import {
@@ -7,6 +7,7 @@ import {
   ImagePlus,
   Languages,
   LoaderCircle,
+  MoreHorizontal,
   Plus,
   RotateCcw,
   Save,
@@ -42,6 +43,9 @@ const statusKind = ref<StatusKind>("idle");
 const statusText = ref("");
 const isBusy = ref(false);
 const isCheckingUpdates = ref(false);
+const settingsMenu = ref<HTMLElement | null>(null);
+const isSettingsMenuOpen = ref(false);
+const isTauriApp = isTauri();
 const renameFolder = ref(false);
 let folderRequestId = 0;
 const {
@@ -91,7 +95,7 @@ const languageOptions = computed(() =>
   })),
 );
 async function checkForUpdates(silent = false) {
-  if (!isTauri() || isCheckingUpdates.value) return;
+  if (!isTauriApp || isCheckingUpdates.value) return;
   isCheckingUpdates.value = true;
   try {
     const update = await check();
@@ -113,6 +117,31 @@ async function checkForUpdates(silent = false) {
   } finally {
     isCheckingUpdates.value = false;
   }
+}
+
+async function handleManualUpdateCheck() {
+  isSettingsMenuOpen.value = false;
+  await checkForUpdates();
+}
+
+function toggleSettingsMenu() {
+  isSettingsMenuOpen.value = !isSettingsMenuOpen.value;
+}
+
+function openSettingsMenu() {
+  isSettingsMenuOpen.value = true;
+}
+
+function closeSettingsMenu() {
+  isSettingsMenuOpen.value = false;
+}
+
+function handleDocumentClick(event: MouseEvent) {
+  if (!settingsMenu.value?.contains(event.target as Node)) closeSettingsMenu();
+}
+
+function handleSettingsKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") closeSettingsMenu();
 }
 const validPairs = computed(() => {
   const pairs: { file: MusicFile; track: TrackMetadata; index: number }[] = [];
@@ -202,7 +231,13 @@ const hasAlbumPreview = computed(() =>
   Boolean(coverPreview.value || isCoverLoading.value || albumTitle.value.trim() || albumPreviewMeta.value),
 );
 onMounted(() => {
-  void checkForUpdates(true);
+  document.addEventListener("click", handleDocumentClick);
+  window.addEventListener("keydown", handleSettingsKeydown);
+  if (isTauriApp) void checkForUpdates(true);
+});
+onBeforeUnmount(() => {
+  document.removeEventListener("click", handleDocumentClick);
+  window.removeEventListener("keydown", handleSettingsKeydown);
 });
 const canSubmit = computed(
   () =>
@@ -455,10 +490,30 @@ function stringifyError(error: unknown): string {
           </option>
         </select>
       </label>
-      <button class="secondary-button" type="button" :disabled="isCheckingUpdates" @click="() => checkForUpdates()">
-        <LoaderCircle v-if="isCheckingUpdates" class="spin" :size="16" aria-hidden="true" />
-        <span>{{ isCheckingUpdates ? text.checkingUpdates : text.checkUpdates }}</span>
-      </button>
+      <div v-if="isTauriApp" ref="settingsMenu" class="settings-menu">
+        <button
+          class="tool-button"
+          type="button"
+          :title="text.settings"
+          :aria-label="text.settings"
+          :aria-expanded="isSettingsMenuOpen"
+          @click.stop="toggleSettingsMenu"
+          @contextmenu.prevent.stop="openSettingsMenu"
+        >
+          <MoreHorizontal :size="19" aria-hidden="true" />
+        </button>
+        <div v-if="isSettingsMenuOpen" class="settings-menu-panel" @click.stop>
+          <button
+            class="settings-menu-item"
+            type="button"
+            :disabled="isCheckingUpdates"
+            @click="handleManualUpdateCheck"
+          >
+            <LoaderCircle v-if="isCheckingUpdates" class="spin" :size="16" aria-hidden="true" />
+            <span>{{ isCheckingUpdates ? text.checkingUpdates : text.checkUpdates }}</span>
+          </button>
+        </div>
+      </div>
     </header>
 
     <section class="workspace">
