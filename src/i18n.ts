@@ -11,7 +11,6 @@ export const labels = {
     appTitle: "同人 CD 标签整理工具",
     appSubtitle: "选择专辑文件夹，贴入曲目表，一次写入标题、艺术家、专辑名和封面。",
     language: "语言",
-    settings: "设置",
     folder: "专辑文件夹",
     chooseFolder: "选择文件夹",
     albumTitle: "专辑名",
@@ -85,7 +84,6 @@ export const labels = {
     appSubtitle:
       "アルバムフォルダと曲目リストを選択して、曲名、アーティスト、アルバム名、カバー画像をまとめて書き込みます。",
     language: "言語",
-    settings: "設定",
     folder: "アルバムフォルダ",
     chooseFolder: "フォルダを選択",
     albumTitle: "アルバム名",
@@ -160,7 +158,6 @@ export const labels = {
     appSubtitle:
       "Pick an album folder, paste a tracklist, then write title, artist, album, and cover tags in one pass.",
     language: "Language",
-    settings: "Settings",
     folder: "Album folder",
     chooseFolder: "Choose folder",
     albumTitle: "Album title",

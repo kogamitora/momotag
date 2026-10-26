@@ -49,16 +49,6 @@
   .language-select span { @apply text-sm text-[#48505a]; }
   .language-select select { @apply border-0 bg-transparent text-app-text outline-none; }
 
-  .settings-menu { @apply relative shrink-0; }
-  .settings-menu-panel {
-    @apply absolute right-0 top-[calc(100%+8px)] z-10 min-w-44 rounded-lg border border-panel-border bg-white p-1.5 shadow-[0_12px_30px_rgba(30,43,54,0.16)];
-  }
-  .settings-menu-item {
-    @apply flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-3 py-2 text-left text-sm text-app-text;
-  }
-  .settings-menu-item:hover { @apply bg-[#eef5f6]; }
-  .settings-menu-item:disabled { @apply cursor-not-allowed opacity-50; }
-
   .workspace {
     @apply mx-auto grid w-(--content-width) gap-5;
     grid-template-columns: minmax(320px, 0.7fr) minmax(680px, 1.3fr);
