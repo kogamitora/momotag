@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { check } from "@tauri-apps/plugin-updater";
 import { isTauri } from "@tauri-apps/api/core";
 import {
@@ -42,6 +43,8 @@ const statusKind = ref<StatusKind>("idle");
 const statusText = ref("");
 const isBusy = ref(false);
 const isCheckingUpdates = ref(false);
+const isTauriApp = isTauri();
+let trayUnlisten: (() => void) | null = null;
 const renameFolder = ref(false);
 let folderRequestId = 0;
 const {
@@ -91,7 +94,7 @@ const languageOptions = computed(() =>
   })),
 );
 async function checkForUpdates(silent = false) {
-  if (!isTauri() || isCheckingUpdates.value) return;
+  if (!isTauriApp || isCheckingUpdates.value) return;
   isCheckingUpdates.value = true;
   try {
     const update = await check();
@@ -114,6 +117,7 @@ async function checkForUpdates(silent = false) {
     isCheckingUpdates.value = false;
   }
 }
+
 const validPairs = computed(() => {
   const pairs: { file: MusicFile; track: TrackMetadata; index: number }[] = [];
   const len = Math.min(files.value.length, tracks.value.length);
@@ -202,7 +206,17 @@ const hasAlbumPreview = computed(() =>
   Boolean(coverPreview.value || isCoverLoading.value || albumTitle.value.trim() || albumPreviewMeta.value),
 );
 onMounted(() => {
+  if (!isTauriApp) return;
   void checkForUpdates(true);
+  void listen("tray://check-for-updates", () => {
+    void checkForUpdates();
+  }).then((unlisten) => {
+    trayUnlisten = unlisten;
+  });
+});
+onBeforeUnmount(() => {
+  trayUnlisten?.();
+  trayUnlisten = null;
 });
 const canSubmit = computed(
   () =>
@@ -455,10 +469,6 @@ function stringifyError(error: unknown): string {
           </option>
         </select>
       </label>
-      <button class="secondary-button" type="button" :disabled="isCheckingUpdates" @click="() => checkForUpdates()">
-        <LoaderCircle v-if="isCheckingUpdates" class="spin" :size="16" aria-hidden="true" />
-        <span>{{ isCheckingUpdates ? text.checkingUpdates : text.checkUpdates }}</span>
-      </button>
     </header>
 
     <section class="workspace">

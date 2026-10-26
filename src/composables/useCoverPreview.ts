@@ -52,6 +52,13 @@ export function useCoverPreview(onError: (error: unknown) => void) {
     loadingSource = path;
     isCoverLoading.value = true;
     try {
+      if (isRemoteImageSource(path)) {
+        if (currentId !== coverRequestId) return;
+        revokePreview();
+        coverPreview.value = path;
+        return;
+      }
+
       const image = await loadCoverPreview(path);
       if (currentId !== coverRequestId) return;
       revokePreview();
@@ -94,7 +101,11 @@ export function useCoverPreview(onError: (error: unknown) => void) {
   }
 
   function revokePreview() {
-    if (coverPreview.value) URL.revokeObjectURL(coverPreview.value);
+    if (coverPreview.value.startsWith("blob:")) URL.revokeObjectURL(coverPreview.value);
+  }
+
+  function isRemoteImageSource(source: string) {
+    return /^https?:\/\//i.test(source);
   }
 
   function handleWindowKeydown(event: KeyboardEvent) {
