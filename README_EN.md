@@ -1,10 +1,10 @@
 # MomoTag
 
-[中文](README.md) · [日本語](README_JA.md) · [English](README_EN.md)
+[日本語](README.md) · [中文](README_ZH.md) · [English](README_EN.md)
 
 MomoTag is a desktop music-tagging tool for local albums, including doujin CDs and digital releases. Choose an album folder, paste a tracklist, select a cover, and write album, artist, year, track, and cover metadata in one pass.
 
-The interface supports Chinese, Japanese, and English. The default language follows the system language: Japanese systems use Japanese, Chinese systems use Chinese, and all other systems use English. You can also switch languages manually in the app.
+The interface supports Chinese, Japanese, and English. It follows the system language by default, and you can switch languages manually in the app.
 
 ## Features
 
@@ -17,7 +17,7 @@ The interface supports Chinese, Japanese, and English. The default language foll
 - Block submission while tracks or audio files are still unpaired.
 - Create temporary backups before writing and attempt a rollback when a mutation fails.
 - Optionally rename the album folder to the album title after writing.
-- Check for updates quietly at startup or manually; after confirmation, the app downloads, installs, and restarts.
+- Check for updates quietly at startup. To check manually, use the system tray context menu; after confirmation, the app downloads, installs, and restarts.
 
 ## Supported formats
 
@@ -29,8 +29,8 @@ Cover formats: `jpg`, `jpeg`, `png`, and `webp`.
 
 ## Usage
 
-1. Choose an album folder containing the audio files.
-2. Enter the album title, album artist, and year. Existing tags and common folder covers may be used as suggestions.
+1. Choose an album folder containing the audio files. Changing folders keeps the album details, cover, and tracklist already entered on the left.
+2. Enter the album title, album artist, and year. Selecting a folder does not replace these entries.
 3. Choose a local cover or paste an HTTP/HTTPS image URL.
 4. Paste the tracklist and review the parsed tracks and file matching.
 5. Edit filenames, titles, or artists as needed, or exclude files from this write.
@@ -87,8 +87,8 @@ Read [RELEASING.md](RELEASING.md) before publishing. Keep the version consistent
 
 ## Documentation
 
-- [发布说明（中文）](README.md)
-- [日本語 README](README_JA.md)
+- [日本語 README](README.md)
+- [中文 README](README_ZH.md)
 - [Releasing and automatic updates](RELEASING.md)
 
 ## License

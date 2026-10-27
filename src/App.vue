@@ -19,7 +19,6 @@ import {
   chooseAlbumFolder,
   scanAlbumFolder,
   parseTracklist,
-  suggestAlbumMetadata,
 } from "./api/musicTags";
 import { detectLocale, labels, localeNames, type Locale } from "./i18n";
 import { isAppError } from "./api/tauriClient";
@@ -237,9 +236,9 @@ async function pickFolder() {
   const selected = await chooseAlbumFolder();
   if (!selected) return;
 
-  // Selecting another album starts a fresh editing session. In particular,
-  // never align the new files against the previous album's tracks or cover.
-  resetWorkspace();
+  // Selecting a folder only replaces folder-dependent data on the right.
+  // Keep the user's metadata, cover, and tracklist inputs on the left intact.
+  resetFolderSelection();
   folderPath.value = selected;
   await refreshFiles(selected, folderRequestId);
 }
@@ -279,7 +278,6 @@ async function refreshFiles(
     }
 
     syncTargetFileNames(true);
-    await applyAlbumSuggestions(selectedFolder, requestId);
   } catch (error) {
     if (requestId !== folderRequestId || folderPath.value !== selectedFolder) return;
 
@@ -292,43 +290,23 @@ async function refreshFiles(
   }
 }
 
-async function applyAlbumSuggestions(selectedFolder: string, requestId: number) {
-  try {
-    const suggestion = await suggestAlbumMetadata(selectedFolder);
-    if (requestId !== folderRequestId || folderPath.value !== selectedFolder) return;
-
-    if (!albumTitle.value.trim() && suggestion.albumTitle) {
-      albumTitle.value = suggestion.albumTitle;
-    }
-
-    if (!albumArtist.value.trim() && suggestion.albumArtist) {
-      albumArtist.value = suggestion.albumArtist;
-    }
-
-    if (!albumYear.value.trim() && suggestion.albumYear) {
-      albumYear.value = String(suggestion.albumYear);
-    }
-
-    if (!coverPath.value.trim() && suggestion.coverPath) {
-      coverPath.value = suggestion.coverPath;
-      await handleCoverSourceChange();
-    }
-  } catch {
-    // Ignore metadata hints when the files do not expose readable album tags.
-  }
-}
-
 function resetWorkspace() {
-  folderRequestId += 1;
   // Invalidate any in-flight scan and release the UI lock immediately. A
   // stale request's finally block must not be responsible for clearing it.
-  isBusy.value = false;
+  resetFolderSelection();
   albumTitle.value = "";
   albumArtist.value = "";
   albumYear.value = "";
-  folderPath.value = "";
-  resetCoverPreview();
   tracklistText.value = "";
+  resetCoverPreview();
+  statusKind.value = "idle";
+  statusText.value = "";
+}
+
+function resetFolderSelection() {
+  folderRequestId += 1;
+  isBusy.value = false;
+  folderPath.value = "";
   resetParser();
   resetTrackEditor();
   statusKind.value = "idle";

@@ -1,6 +1,6 @@
 # Releasing and automatic updates
 
-Automatic updates use Tauri's signed updater packages and GitHub Releases. The app checks quietly at startup and also exposes a manual **Check for updates** button. It only downloads and installs after the user confirms.
+Automatic updates use Tauri's signed updater packages and GitHub Releases. The app checks quietly at startup; users can also choose **Check for updates** from the system tray's right-click menu. It only downloads and installs after the user confirms.
 
 ## Signing configuration
 
