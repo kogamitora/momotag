@@ -54,17 +54,31 @@ jobs:
             - **Fedora / RPM 系 Linux (64-bit):** `.rpm`
             - **その他の Linux (64-bit):** `.AppImage`
 
+            ## テストと Windows のセキュリティ警告
+
+            現時点で動作確認済みの環境は Windows のみです。macOS と Linux は未検証です。
+
+            個人開発のため Microsoft のコード署名証明書で署名しておらず、Windows で警告ダイアログが表示される場合があります。この警告は未署名であることに伴うもので、警告が表示されたこと自体はアプリに問題があることを意味しません。
+
             `.sig` ファイルと `latest.json` は自動更新用です。通常のインストールではダウンロード不要です。
 
             ## 下载
 
             请根据操作系统选择安装包：Windows 下载 `.exe` 或 `.msi`；Apple 芯片 Mac 下载 `.dmg`；Ubuntu / Debian 下载 `.deb`；Fedora 等 RPM 系 Linux 下载 `.rpm`；其他 x64 Linux 可使用 `.AppImage`。
 
+            ## 测试与 Windows 安全提示
+
+            目前只在 Windows 环境完成测试，macOS 和 Linux 尚未验证。由于这是个人开发项目，尚未使用微软代码签名证书签名，Windows 可能会显示安全警告弹窗。该提示与未签名有关，弹窗本身不代表程序存在问题。
+
             `.sig` 文件和 `latest.json` 用于应用自动更新，手动安装时无需下载。
 
             ## Download
 
             Choose the installer for your operating system: Windows (`.exe` or `.msi`), Apple Silicon Mac (`.dmg`), Ubuntu / Debian (`.deb`), Fedora and other RPM-based Linux (`.rpm`), or other x64 Linux (`.AppImage`).
+
+            ## Testing and Windows security warning
+
+            The app has only been tested on Windows so far; macOS and Linux have not been verified. As this is a personal project, it is not signed with a Microsoft code-signing certificate, so Windows may show a security warning. The warning is due to the missing signature and does not, by itself, indicate a problem with the app.
 
             `.sig` files and `latest.json` are used by the in-app updater and are not needed for manual installation.
           releaseDraft: true
