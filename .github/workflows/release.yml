@@ -43,7 +43,30 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "momotag ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install this version."
+          releaseBody: |
+            ## ダウンロード
+
+            お使いの OS に合ったインストーラーを選んでください。
+
+            - **Windows (64-bit):** `.exe` または `.msi`
+            - **macOS (Apple Silicon):** `.dmg`
+            - **Ubuntu / Debian (64-bit):** `.deb`
+            - **Fedora / RPM 系 Linux (64-bit):** `.rpm`
+            - **その他の Linux (64-bit):** `.AppImage`
+
+            `.sig` ファイルと `latest.json` は自動更新用です。通常のインストールではダウンロード不要です。
+
+            ## 下载
+
+            请根据操作系统选择安装包：Windows 下载 `.exe` 或 `.msi`；Apple 芯片 Mac 下载 `.dmg`；Ubuntu / Debian 下载 `.deb`；Fedora 等 RPM 系 Linux 下载 `.rpm`；其他 x64 Linux 可使用 `.AppImage`。
+
+            `.sig` 文件和 `latest.json` 用于应用自动更新，手动安装时无需下载。
+
+            ## Download
+
+            Choose the installer for your operating system: Windows (`.exe` or `.msi`), Apple Silicon Mac (`.dmg`), Ubuntu / Debian (`.deb`), Fedora and other RPM-based Linux (`.rpm`), or other x64 Linux (`.AppImage`).
+
+            `.sig` files and `latest.json` are used by the in-app updater and are not needed for manual installation.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
